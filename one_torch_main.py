@@ -77,7 +77,11 @@ HPARAMS_DEFAULT = {
         'log_file':'experiment.log',
         'backend':'nccl',
         'tensorboard':False,
+        'checkpoint_warmup':5
 }
+    
+best_loss=99999
+best_epoch=-1
 
 
 def sigint_handler(signum, frame):
@@ -283,8 +287,6 @@ def save_train_epoch_list(epoch_list):
     
 
 def epoch_train(Runtime,Experiment):
-#def epoch_train(args, models,criterions, device, train_loader, optimizers, epoch):
-    #logger.info(epoch,model)
     HPARAMS=Experiment['hparams']
     models = Experiment['custom_models']
     train_loader = Experiment['train_loader']
@@ -296,6 +298,7 @@ def epoch_train(Runtime,Experiment):
     #epoch_insight_fn=Experiment.get('train_epoch_insight_fn')
     Runtime['epoch_results']=[]
     run_experiment_callback('pre_epoch_train_fn')
+    total_num=0
     for batch_idx, original_data in enumerate(tqdm.tqdm(train_loader, ncols=100,desc="Training Epoch {}".format(Runtime['epoch']))):
         if sig_int_flag:
             break
@@ -316,7 +319,7 @@ def epoch_train(Runtime,Experiment):
         for k in loss_info:
             if 'loss' in k:
                 train_loss_info[k]+=loss_info[k] 
-
+        total_num+=1
         #save batch results
         #if epoch_insight_record_fn:
         #    #result_list.append((output.clone().detach().cpu(),target.clone().detach().cpu()))
@@ -338,7 +341,7 @@ def epoch_train(Runtime,Experiment):
     #print(output.shape,target.shape)
     epoch_insight_result = run_experiment_callback('post_epoch_train_fn')
 
-    total_num=len(train_loader)
+    #total_num=len(train_loader)
     for k in loss_info:
         train_loss_info[k]/=total_num
 
@@ -346,7 +349,6 @@ def epoch_train(Runtime,Experiment):
     return train_loss_info,epoch_insight_result
 
 def validate(Runtime,Experiment):
-#def validate(args, models, criterions,device, val_loader,n_batch=0,from_epoch=None):
     models = Experiment.get('custom_models')
     val_loader = Experiment.get('val_loader')
     device = Experiment['device']
@@ -362,6 +364,7 @@ def validate(Runtime,Experiment):
     Runtime['epoch_results']=[]
     run_experiment_callback('pre_epoch_val_fn')
     train_epoch_val_n_batch = Experiment['hparams']['train_epoch_val_n_batch']
+    total_num=0
     with torch.no_grad():
         for batch_idx, original_data in enumerate(val_loader):
             #print(batch_idx)
@@ -381,6 +384,7 @@ def validate(Runtime,Experiment):
             for k in loss_info:
                 if 'loss' in k:
                     val_loss_info[k]+=loss_info[k] 
+            total_num+=1
         
             batch_info=run_experiment_callback('post_batch_val_fn')
             if batch_info is not None:
@@ -401,7 +405,7 @@ def validate(Runtime,Experiment):
     #    #epoch_insight_result += epoch_insight_fn(guess_list)  ##
     epoch_insight_result = run_experiment_callback('post_epoch_val_fn')
 
-    total_num=len(val_loader)
+    #total_num=len(val_loader)
     for k in loss_info:
         val_loss_info[k]/=total_num
 
@@ -409,7 +413,6 @@ def validate(Runtime,Experiment):
     return val_loss_info,epoch_insight_result
 
 def inference(Runtime,Experiment):
-#def validate(args, models, criterions,device, val_loader,n_batch=0,from_epoch=None):
     models = Experiment.get('custom_models')
     infer_loader = Experiment.get('infer_loader')
     device = Experiment['device']
@@ -503,13 +506,22 @@ def init_experiment(action):
     val_sampler=None
     infer_sampler=None
     if train_path is not None:
-        train_dataset=Experiment['create_train_dataset_fn'](train_path)
+        if Experiment.get('create_train_dataset_fn'):
+            train_dataset=Experiment['create_train_dataset_fn'](train_path)
+        #if Experiment.get('create_train_loader_fn'):
+        #    train_loader=Experiment['create_train_loader_fn'](train_path)
     if val_path is not None:
         #print(val_path)
-        val_dataset=Experiment['create_val_dataset_fn'](val_path)
+        if Experiment.get('create_val_dataset_fn'):
+            val_dataset=Experiment['create_val_dataset_fn'](val_path)
+        #if Experiment.get('create_val_loader_fn'):
+        #    val_loader=Experiment['create_val_loader_fn'](val_path)
     if infer_path is not None:
-        infer_dataset=Experiment['create_infer_dataset_fn'](infer_path)
-    print(infer_dataset)
+        if Experiment.get('create_infer_dataset_fn'):
+            infer_dataset=Experiment['create_infer_dataset_fn'](infer_path)
+            #print(infer_dataset)
+        #if Experiment.get('create_infer_loader_fn'):
+        #    infer_loader=Experiment['create_infer_loader_fn'](infer_path)
 
 
 
@@ -525,28 +537,46 @@ def init_experiment(action):
         kw_data_loader_args['num_workers']=HPARAMS['loader_n_worker'] 
 
     if ddp_flag:
-        if train_dataset:
+        if train_loader is None and train_dataset:
             train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
             fn=create_collate_fn(train_dataset)
-            train_loader = torch.utils.data.DataLoader(train_dataset,batch_size=HPARAMS['train_batch_size'], shuffle=False, sampler=train_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=True)
-        if val_dataset:
+            if Experiment.get('create_train_loader_fn'):
+                train_loader = Experiment['create_train_loader_fn'](train_dataset,batch_size=HPARAMS['train_batch_size'])
+            else:
+                train_loader = torch.utils.data.DataLoader(train_dataset,batch_size=HPARAMS['train_batch_size'], shuffle=False, sampler=train_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=True)
+        if val_loader is None and val_dataset:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
             fn=create_collate_fn(val_dataset)
-            val_loader = torch.utils.data.DataLoader(val_dataset,batch_size=HPARAMS['val_batch_size'], shuffle=False, sampler=val_sampler,collate_fn=fn,**kw_data_loader_args)
-        if infer_dataset:
+            if Experiment.get('create_val_loader_fn'):
+                val_loader = Experiment['create_val_loader_fn'](val_dataset,batch_size=HPARAMS['val_batch_size'])
+            else:
+                val_loader = torch.utils.data.DataLoader(val_dataset,batch_size=HPARAMS['val_batch_size'], shuffle=False, sampler=val_sampler,collate_fn=fn,**kw_data_loader_args)
+        if infer_loader is None and infer_dataset:
             infer_sampler = torch.utils.data.distributed.DistributedSampler(infer_dataset)
             fn=create_collate_fn(infer_dataset,'infer_')
-            infer_loader = torch.utils.data.DataLoader(infer_dataset,batch_size=HPARAMS['infer_batch_size'], shuffle=False, sampler=infer_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=False)
+            if Experiment.get('create_infer_loader_fn'):
+                infer_loader = Experiment['create_infer_loader_fn'](infer_dataset,batch_size=HPARAMS['infer_batch_size'])
+            else:
+                infer_loader = torch.utils.data.DataLoader(infer_dataset,batch_size=HPARAMS['infer_batch_size'], shuffle=False, sampler=infer_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=False)
     else:
-        if train_dataset:
+        if train_loader is None and train_dataset:
             fn=create_collate_fn(train_dataset)
-            train_loader = DataLoader(train_dataset, **kw_data_loader_args, batch_size=HPARAMS['train_batch_size'],shuffle=True,collate_fn=fn,drop_last=True)
-        if val_dataset:
+            if Experiment.get('create_train_loader_fn'):
+                train_loader = Experiment['create_train_loader_fn'](train_dataset,batch_size=HPARAMS['train_batch_size'])
+            else:
+                train_loader = DataLoader(train_dataset, **kw_data_loader_args, batch_size=HPARAMS['train_batch_size'],shuffle=True,collate_fn=fn,drop_last=True)
+        if val_loader is None and val_dataset:
             fn=create_collate_fn(val_dataset)
-            val_loader = DataLoader(val_dataset, **kw_data_loader_args, batch_size=HPARAMS['val_batch_size'],shuffle=False,collate_fn=fn,drop_last=False)
-        if infer_dataset:
+            if Experiment.get('create_val_loader_fn'):
+                val_loader = Experiment['create_val_loader_fn'](val_dataset,batch_size=HPARAMS['val_batch_size'])
+            else:
+                val_loader = DataLoader(val_dataset, **kw_data_loader_args, batch_size=HPARAMS['val_batch_size'],shuffle=False,collate_fn=fn,drop_last=False)
+        if infer_loader is None and infer_dataset:
             fn=create_collate_fn(infer_dataset,'infer_')
-            infer_loader = DataLoader(infer_dataset, **kw_data_loader_args, batch_size=HPARAMS['infer_batch_size'],shuffle=False,collate_fn=fn,drop_last=False)
+            if Experiment.get('create_infer_loader_fn'):
+                infer_loader = Experiment['create_infer_loader_fn'](infer_dataset,batch_size=HPARAMS['infer_batch_size'])
+            else:
+                infer_loader = DataLoader(infer_dataset, **kw_data_loader_args, batch_size=HPARAMS['infer_batch_size'],shuffle=False,collate_fn=fn,drop_last=False)
 
     if train_dataset:
         Runtime['total_train_size']=len(train_dataset)
@@ -562,11 +592,11 @@ def init_experiment(action):
         Runtime['total_infer_batches']=len(infer_loader)
 
     if action=='train':
-        assert train_dataset and train_loader
+        assert train_loader
     if action=='val':
-        assert val_dataset and val_loader
+        assert val_loader
     if action=='infer':
-        assert infer_dataset and infer_loader
+        assert infer_loader
     
     list(map(lambda x:x.to(device),custom_models))
     list(map(lambda x:x.to(device),loss_criterions))
@@ -602,10 +632,13 @@ def init_experiment(action):
     Runtime['batch_size']=HPARAMS['batch_size']
     Runtime['train_batch_size']=HPARAMS['train_batch_size']
     Runtime['val_batch_size']=HPARAMS['val_batch_size']
+    Runtime['infer_batch_size']=HPARAMS['infer_batch_size']
 
 def train_wrapper():
     global Runtime
     global Experiment
+    global best_loss
+    global best_epoch
     HPARAMS=Experiment['hparams']
     custom_models = Experiment['custom_models']
     custom_optimizers = Experiment['custom_optimizers']
@@ -668,14 +701,14 @@ def train_wrapper():
         Runtime['batches_done']=0
         start_time = time.time()
         train_loss_info,train_insight = epoch_train(Runtime,Experiment)
-        if HPARAMS['checkpoint_n_epoch']>0 and (epoch % HPARAMS['checkpoint_n_epoch']==0):
-            save_checkpoints(epoch)
         if sig_int_flag:
             print('Exit Training\n')
             break
         #train_loss_info,train_insight = epoch_train(args, custom_models, loss_criterions,device, train_loader, custom_optimizers, epoch)
+        epoch_loss=train_loss_info.get('loss')
         if HPARAMS['early_stop'] > 0:
-            check_loss = train_loss_info.get('loss') 
+            if epoch_loss:
+                check_loss = epoch_loss 
         end_time = time.time()
         epoch_mins, epoch_secs = epoch_time(start_time, end_time)
         for scheduler in custom_schedulers:
@@ -693,8 +726,20 @@ def train_wrapper():
             #print('run validate per epoch')
             val_loss_info,val_insight = validate(Runtime,Experiment)
             #val_loss_info,val_insight = validate(args, custom_models, loss_criterions,device, val_loader,n_batch=HPARAMS['epoch_val_n_batch'],from_epoch=epoch)
+            epoch_loss = val_loss_info.get('loss')
             if HPARAMS['early_stop'] > 0:
-                check_loss = val_loss
+                if epoch_loss:
+                    check_loss = epoch_loss
+        save_flag=False
+        if epoch_loss:
+            if epoch_loss < best_loss:
+                best_epoch=epoch
+                best_loss = epoch_loss
+                save_flag=True
+        if HPARAMS['checkpoint_n_epoch']>0 and (epoch % HPARAMS['checkpoint_n_epoch']==0):
+            save_flag=True
+        if save_flag and epoch >= HPARAMS['checkpoint_warmup']:
+            save_checkpoints(epoch)
         loss_str=extract_loss_info(train_loss_info)
         epoch_log=f'Epoch: {epoch+1:02} | Elapse: {epoch_mins}m {epoch_secs}s |\tTrain: {loss_str} '
         if val_loader:
@@ -724,14 +769,13 @@ def train_wrapper():
     save_train_epoch_list(train_epoch_list)
 
 
-def validate_wrapper(args):
+def validate_wrapper():
 
     init_experiment('val')
     start_time = time.time()
     Runtime['step']='validate'
     run_experiment_callback('pre_val_fn')
     val_loss_info,val_insight = validate(Runtime,Experiment)
-    #val_loss_info,val_insight = validate(args, custom_models, loss_criterions,device, val_loader )
     end_time = time.time()
     epoch_mins, epoch_secs = epoch_time(start_time, end_time)
     loss_str=extract_loss_info(val_loss_info)
@@ -740,7 +784,17 @@ def validate_wrapper(args):
     logger.info(val_insight)
     run_experiment_callback('post_val_fn')
 
-def inference_wrapper(args):
+def final_validate():
+    Runtime['step']='validate'
+    val_loss_info,val_insight = validate(Runtime,Experiment)
+    end_time = time.time()
+    epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+    loss_str=extract_loss_info(val_loss_info)
+    val_log=f'Validate Elapse: {epoch_mins}m {epoch_secs}s |\tLoss: {loss_str} '
+    logger.info(val_log)
+    logger.info(val_insight)
+
+def inference_wrapper():
 
     init_experiment('infer')
     start_time = time.time()
@@ -780,17 +834,29 @@ def parse_experiment_info(Experiment):
             HPARAMS_DEFAULT['batch_size']=hparams.get('batch_size')
             HPARAMS_DEFAULT['train_batch_size']=hparams.get('batch_size')
             HPARAMS_DEFAULT['val_batch_size']=hparams.get('batch_size')
+            HPARAMS_DEFAULT['infer_batch_size']=hparams.get('batch_size')
             
         if hparams.get('train_batch_size'):
             HPARAMS_DEFAULT['train_batch_size']=hparams.get('train_batch_size')
 
         if hparams.get('val_batch_size'):
             HPARAMS_DEFAULT['val_batch_size']=hparams.get('val_batch_size')
+
+        if hparams.get('infer_batch_size'):
+            HPARAMS_DEFAULT['infer_batch_size']=hparams.get('infer_batch_size')
+
         Experiment['hparams']=HPARAMS_DEFAULT
     if Experiment.get('custom_optimizers') is None:
         Experiment['custom_optimizers']=[]
     if Experiment.get('custom_schedulers') is None:
         Experiment['custom_schedulers']=[]
+
+def load_models(path):
+    global Experiment
+    custom_models=Experiment.get('custom_models')
+    for idx,model in enumerate(custom_models):
+        model_name = model._get_name()
+        model.load_state_dict(torch.load(os.path.join(path,"{}_{}.pt".format(model_name,idx))))
 
 
 def load_checkpoints():
@@ -815,10 +881,12 @@ def load_checkpoints():
             print('## EXIT ##  checkpoint {} not exist in experiment_dir:{}'.format(use_checkpoint,former_experiment_dir))
             exit(0)
         print('Use checkpoint {} of experiment_dir:{}'.format(use_checkpoint,former_experiment_dir))
-        custom_models=Experiment.get('custom_models')
-        for idx,model in enumerate(custom_models):
-            model_name = model._get_name()
-            model.load_state_dict(torch.load(os.path.join(checkpoints_path,f'{use_checkpoint}',"{}_{}.pt".format(model_name,idx))))
+        load_models(os.path.join(checkpoints_path,f'{use_checkpoint}'))
+        #
+        #custom_models=Experiment.get('custom_models')
+        #for idx,model in enumerate(custom_models):
+        #    model_name = model._get_name()
+        #    model.load_state_dict(torch.load(os.path.join(checkpoints_path,f'{use_checkpoint}',"{}_{}.pt".format(model_name,idx))))
         #all_files=otu.list_all_files(checkpoints_path)
         #print(all_files)
         start_epoch=use_checkpoint+1
@@ -861,13 +929,14 @@ def load_experiment(experiment_dir,experiment_src_path):
     Experiment['id']=experiment_name
     otu.init(Runtime,Experiment)
 
-    custom_models=Experiment.get('custom_models')
+    #custom_models=Experiment.get('custom_models')
     
-    models_path=os.path.join(experiment_dir,'models')
     try:
-        for idx,model in enumerate(custom_models):
-            model_name = model._get_name()
-            model.load_state_dict(torch.load(os.path.join(models_path,"{}_{}.pt".format(model_name,idx))))
+        models_path=os.path.join(experiment_dir,'models')
+        load_models(models_path)
+        #for idx,model in enumerate(custom_models):
+        #    model_name = model._get_name()
+        #    model.load_state_dict(torch.load(os.path.join(models_path,"{}_{}.pt".format(model_name,idx))))
         return
     except Exception as e:
         print('Open models fail! ')
@@ -877,9 +946,10 @@ def load_experiment(experiment_dir,experiment_src_path):
         checkpoints_path=os.path.join(experiment_dir,'checkpoints')
         all_checkpoints = list(map(lambda x:int(x),os.listdir(checkpoints_path)))
         last_checkpont=max(all_checkpoints)
-        for idx,model in enumerate(custom_models):
-            model_name = model._get_name()
-            model.load_state_dict(torch.load(os.path.join(checkpoints_path,f'{last_checkpoint}',"{}_{}.pt".format(model_name,idx))))
+        load_models(os.path.join(checkpoints_path,f'{last_checkpoint}'))
+        #for idx,model in enumerate(custom_models):
+        #    model_name = model._get_name()
+        #    model.load_state_dict(torch.load(os.path.join(checkpoints_path,f'{last_checkpoint}',"{}_{}.pt".format(model_name,idx))))
         return
     except Exception as e:
         print('Open checkpoint fail! ')
@@ -945,13 +1015,22 @@ def create_experiment(experiment_src_path):
 
 
 
-def update_hparams_by_conf(filename):
+def update_hparams_by_conf(action,filename):
     global Runtime
     global Experiment
     import yaml
     with open(filename) as f:
-        content = yaml.save_load(f)
+        content = yaml.load(f)
         print(content)
+        for a in ['train','val','infer']:
+            params=content.get(a)
+            if params is None:
+                continue
+            for k in params:
+                if k in ['dataset_path','batch_size']:
+                    Experiment['hparams'][a+k]=params[k]
+                else:
+                    Experiment['hparams'][k]=params[k]
 
 
 def update_hparams_by_args(args):
@@ -1009,9 +1088,17 @@ def save_models():
         return
     if Runtime['__rank']!=0:
         return
-    print('Now saving models...')
-    custom_models = Experiment.get('custom_models')
     models_path=os.path.join(experiment_home_dir,'models')
+    print('Now saving models...')
+    if best_epoch>0:
+        best_path = checkpoints_path=os.path.join(experiment_home_dir,'checkpoints','{}'.format(best_epoch))
+        if os.path.exists(best_path):
+            logger.info('Save best checkpoint epoch:{} loss:{} as final models'.format(best_epoch,best_loss))
+            shutil.rmtree(models_path)
+            shutil.copytree(best_path,models_path)
+            return
+    
+    custom_models = Experiment.get('custom_models')
     for idx,model in enumerate(custom_models):
         model_name = model._get_name()
         file_path = os.path.join(models_path,'{}_{}.pt'.format(model_name,idx))
@@ -1080,19 +1167,19 @@ if __name__=="__main__":
         assert args.experiment_path is not None
         load_experiment(args.experiment_path,args.src)
         if args.hparam:
-            update_hparams_by_conf(args.hparam)
+            update_hparams_by_conf('val',args.hparam)
         update_hparams_by_args(args)
         logger = otu.logger_init()
-        validate_wrapper(args)
+        validate_wrapper()
         exit(0)
     elif args.action=='infer':
         assert args.experiment_path is not None
         load_experiment(args.experiment_path,args.src)
         if args.hparam:
-            update_hparams_by_conf(args.hparam)
+            update_hparams_by_conf('infer',args.hparam)
         update_hparams_by_args(args)
         logger = otu.logger_init()
-        inference_wrapper(args)
+        inference_wrapper()
         exit(0)
     
     assert args.action =='train'
@@ -1102,7 +1189,7 @@ if __name__=="__main__":
     create_experiment(args.src)
     
     if args.hparam:
-        update_hparams_by_conf(args.hparam)
+        update_hparams_by_conf('train',args.hparam)
     update_hparams_by_args(args)
 
     logger = otu.logger_init(Experiment['hparams']['log_file'],os.path.join(experiment_home_dir,'log') if not just_a_try else None)
@@ -1122,5 +1209,10 @@ if __name__=="__main__":
     load_checkpoints()
     train_wrapper()
     save_models()
+    if Experiment.get('val_loader'):
+        logger.info('Validate with best model')
+        models_path=os.path.join(experiment_home_dir,'models')
+        load_models(models_path)
+        final_validate()
     Runtime['step']='finish'
     run_experiment_callback("exit_fn")
