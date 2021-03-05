@@ -43,6 +43,7 @@ Runtime={
     'total_train_batches':0,
     'total_val_size':0,
     'total_val_batches':0,
+    'results':{'csv':{},'file':{},'img':{}}
 }
 
 HPARAMS_DEFAULT = {
@@ -363,12 +364,14 @@ def validate(Runtime,Experiment):
     #epoch_insight_fn=Experiment.get('val_epoch_insight_fn')
     Runtime['epoch_results']=[]
     run_experiment_callback('pre_epoch_val_fn')
+    if Runtime['step']=='validate':
+        run_experiment_callback('validate_pre_epoch_val_result_fn')
     train_epoch_val_n_batch = Experiment['hparams']['train_epoch_val_n_batch']
     total_num=0
     with torch.no_grad():
         for batch_idx, original_data in enumerate(val_loader):
             #print(batch_idx)
-            if sig_int_flag:
+            if Runtime['step']=='train' and sig_int_flag:
                 break
             if Runtime['step']=='train' and train_epoch_val_n_batch>0 and batch_idx >= train_epoch_val_n_batch:
                 break
@@ -381,6 +384,7 @@ def validate(Runtime,Experiment):
             assert isinstance(loss_info,dict) 
             Runtime['output']=output
             Runtime['batch_val_loss_info']=loss_info
+   
             for k in loss_info:
                 if 'loss' in k:
                     val_loss_info[k]+=loss_info[k] 
@@ -389,6 +393,9 @@ def validate(Runtime,Experiment):
             batch_info=run_experiment_callback('post_batch_val_fn')
             if batch_info is not None:
                 Runtime['epoch_results'].append(batch_info)
+
+            if Runtime['step']=='validate':
+                run_experiment_callback('validate_batch_val_result_fn')
             #if epoch_insight_record_fn:
             #    #Runtime['epoch_results'].append(epoch_insight_record_fn(Runtime))
             #    batch_info=epoch_insight_record_fn(Runtime,Experiment)
@@ -408,6 +415,9 @@ def validate(Runtime,Experiment):
     #total_num=len(val_loader)
     for k in loss_info:
         val_loss_info[k]/=total_num
+            
+    if Runtime['step']=='validate':
+        run_experiment_callback('validate_val_result_fn')
 
     #print('end validate')
     return val_loss_info,epoch_insight_result
@@ -639,6 +649,7 @@ def train_wrapper():
     global Experiment
     global best_loss
     global best_epoch
+    Runtime['runtime_id'] = 'train_{}'.format(now) 
     HPARAMS=Experiment['hparams']
     custom_models = Experiment['custom_models']
     custom_optimizers = Experiment['custom_optimizers']
@@ -768,11 +779,26 @@ def train_wrapper():
     run_experiment_callback('post_train_fn')
     save_train_epoch_list(train_epoch_list)
 
+def show_results():
+    global Runtime
+    #print(Runtime['results'])
+    results_path=[]
+    for k in Runtime['results']:
+        item = Runtime['results'][k]
+        for tag in item:
+            results_path.append(item[tag]['path'])
+    #print(results_path)
+    if len(results_path)>0:
+        logger.info('Save results to')
+        for path in results_path:
+            logger.info('--> {}'.format(path))
 
 def validate_wrapper():
+    global Runtime
 
     init_experiment('val')
     start_time = time.time()
+    Runtime['runtime_id'] = 'validate_{}'.format(now) 
     Runtime['step']='validate'
     run_experiment_callback('pre_val_fn')
     val_loss_info,val_insight = validate(Runtime,Experiment)
@@ -781,23 +807,32 @@ def validate_wrapper():
     loss_str=extract_loss_info(val_loss_info)
     val_log=f'Validate Elapse: {epoch_mins}m {epoch_secs}s |\tLoss: {loss_str} '
     logger.info(val_log)
-    logger.info(val_insight)
+    if val_insight.get('display'):
+        logger.info(val_insight.get('display'))
     run_experiment_callback('post_val_fn')
+    show_results()
 
 def final_validate():
+    global Runtime
+    start_time = time.time()
     Runtime['step']='validate'
+    logger.info('Start Final Validate')
     val_loss_info,val_insight = validate(Runtime,Experiment)
     end_time = time.time()
     epoch_mins, epoch_secs = epoch_time(start_time, end_time)
     loss_str=extract_loss_info(val_loss_info)
     val_log=f'Validate Elapse: {epoch_mins}m {epoch_secs}s |\tLoss: {loss_str} '
     logger.info(val_log)
-    logger.info(val_insight)
+    if val_insight.get('display'):
+        logger.info(val_insight.get('display'))
+    show_results()
 
 def inference_wrapper():
+    global Runtime
 
     init_experiment('infer')
     start_time = time.time()
+    Runtime['runtime_id'] = 'inference_{}'.format(now) 
     Runtime['step']='inference'
     run_experiment_callback('pre_infer_fn')
     inference(Runtime,Experiment)
@@ -806,6 +841,7 @@ def inference_wrapper():
     infer_log=f'Inference Elapse: {epoch_mins}m {epoch_secs}s'
     logger.info(infer_log)
     run_experiment_callback('post_infer_fn')
+    show_results()
 
 
 def parse_experiment_info(Experiment):
@@ -987,6 +1023,7 @@ def create_experiment(experiment_src_path):
         os.makedirs(os.path.join(experiment_home_dir,'models'),exist_ok=True)
         os.makedirs(os.path.join(experiment_home_dir,'checkpoints'),exist_ok=True)
         os.makedirs(os.path.join(experiment_home_dir,'src'),exist_ok=True)
+        os.makedirs(os.path.join(experiment_home_dir,'results'),exist_ok=True)
         shutil.copy(module.__file__,os.path.join(experiment_home_dir,'src'))
         srcs=Experiment.get('src')
         if srcs and len(srcs)>0:
@@ -1062,8 +1099,7 @@ def update_hparams_by_args(args):
     elif args.action=='val':
         if args.dataset:
             paths = args.dataset.split(',')
-            Experiment['hparams']['train_dataset_path']=paths[0]
-            Experiment['hparams']['val_dataset_path']=None
+            Experiment['hparams']['val_dataset_path']=paths[0]
     
 
 def log_hparams():

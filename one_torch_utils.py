@@ -7,6 +7,7 @@ import cv2
 import shutil
 import matplotlib.pyplot as plt
 import random
+import csv
 
 Runtime=None
 Experiment=None
@@ -152,6 +153,46 @@ def logger_init(log_file=None,sub_log=None):
     return logger
     '''
 
+def save_results_to_csv(runtime,experiment,tag,results):
+    results_csv=runtime['results']['csv']
+    if results_csv.get(tag) is None:
+        runtime_id=runtime.get('runtime_id')
+        experiment_home=Experiment.get('home')
+        os.makedirs(os.path.join(experiment_home,'results',runtime_id),exist_ok=True) 
+        path=os.path.join(get_home_path('results'),runtime_id,'{}.csv'.format(tag))
+        f = open(path,'a',encoding='utf-8')
+        csv_writer = csv.writer(f)
+        runtime['results']['csv'][tag]={'writer':csv_writer,'path':path}
+    else:
+        csv_writer=results_csv[tag]['writer']
+
+    for row in results:
+        csv_writer.writerow(row)
+
+result_id=0
+def save_one_img_result(path,item):
+    global result_id
+    result_id+=1
+    #print(item['numpy'])
+    label=item.get('label')
+    #print(item['numpy'].shape)
+    cv2.imwrite(os.path.join(path,'{}_{}.jpg'.format(result_id,label)),item['numpy'])
+    
+def save_results_to_image(runtime,experiment,tag,results):
+    results_img=runtime['results']['img']
+    if results_img.get(tag) is None:
+        runtime_id=runtime.get('runtime_id')
+        experiment_home=Experiment.get('home')
+        os.makedirs(os.path.join(experiment_home,'results',runtime_id),exist_ok=True) 
+        os.makedirs(os.path.join(experiment_home,'results',runtime_id,tag),exist_ok=True) 
+        os.makedirs(os.path.join(experiment_home,'results',runtime_id,tag,'img'),exist_ok=True) 
+        img_dir_path=os.path.join(experiment_home,'results',runtime_id,tag,'img')
+        runtime['results']['img'][tag]={'path':img_dir_path}
+    else:
+        img_dir_path=results_img[tag]['path']
+
+    for item in results:
+        save_one_img_result(img_dir_path,item)
 
 def create_dirs_at_home(runtime,experiment,ret,dirs):
     experiment_home=Experiment.get('home')
