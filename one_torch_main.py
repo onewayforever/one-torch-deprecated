@@ -533,6 +533,16 @@ def init_experiment(action):
         #if Experiment.get('create_infer_loader_fn'):
         #    infer_loader=Experiment['create_infer_loader_fn'](infer_path)
 
+    if train_dataset:
+        Runtime['total_train_size']=len(train_dataset)
+        logger.info('Train samples:{}'.format(Runtime['total_train_size']))
+    if val_dataset:
+        Runtime['total_val_size']=len(val_dataset)
+        logger.info('Val samples:{}'.format(Runtime['total_val_size']))
+    if infer_dataset:
+        Runtime['total_infer_size']=len(infer_dataset)
+        logger.info('Infer samples:{}'.format(Runtime['total_infer_size']))
+
 
 
     def create_collate_fn(dataset,which=''):
@@ -545,23 +555,25 @@ def init_experiment(action):
     kw_data_loader_args={'pin_memory':HPARAMS['pin_memory']}
     if HPARAMS['loader_n_worker']>0:
         kw_data_loader_args['num_workers']=HPARAMS['loader_n_worker'] 
+   
+    print('train set',len(train_dataset))
 
     if ddp_flag:
-        if train_loader is None and train_dataset:
+        if train_loader is None and train_dataset is not None:
             train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
             fn=create_collate_fn(train_dataset)
             if Experiment.get('create_train_loader_fn'):
                 train_loader = Experiment['create_train_loader_fn'](train_dataset,batch_size=HPARAMS['train_batch_size'])
             else:
                 train_loader = torch.utils.data.DataLoader(train_dataset,batch_size=HPARAMS['train_batch_size'], shuffle=False, sampler=train_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=True)
-        if val_loader is None and val_dataset:
+        if val_loader is None and val_dataset is not None:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
             fn=create_collate_fn(val_dataset)
             if Experiment.get('create_val_loader_fn'):
                 val_loader = Experiment['create_val_loader_fn'](val_dataset,batch_size=HPARAMS['val_batch_size'])
             else:
                 val_loader = torch.utils.data.DataLoader(val_dataset,batch_size=HPARAMS['val_batch_size'], shuffle=False, sampler=val_sampler,collate_fn=fn,**kw_data_loader_args)
-        if infer_loader is None and infer_dataset:
+        if infer_loader is None and infer_dataset is not None:
             infer_sampler = torch.utils.data.distributed.DistributedSampler(infer_dataset)
             fn=create_collate_fn(infer_dataset,'infer_')
             if Experiment.get('create_infer_loader_fn'):
@@ -569,44 +581,35 @@ def init_experiment(action):
             else:
                 infer_loader = torch.utils.data.DataLoader(infer_dataset,batch_size=HPARAMS['infer_batch_size'], shuffle=False, sampler=infer_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=False)
     else:
-        if train_loader is None and train_dataset:
+        if train_loader is None and train_dataset is not None:
             fn=create_collate_fn(train_dataset)
             if Experiment.get('create_train_loader_fn'):
                 train_loader = Experiment['create_train_loader_fn'](train_dataset,batch_size=HPARAMS['train_batch_size'])
             else:
                 train_loader = DataLoader(train_dataset, **kw_data_loader_args, batch_size=HPARAMS['train_batch_size'],shuffle=True,collate_fn=fn,drop_last=True)
-        if val_loader is None and val_dataset:
+        if val_loader is None and val_dataset is not None:
             fn=create_collate_fn(val_dataset)
             if Experiment.get('create_val_loader_fn'):
                 val_loader = Experiment['create_val_loader_fn'](val_dataset,batch_size=HPARAMS['val_batch_size'])
             else:
                 val_loader = DataLoader(val_dataset, **kw_data_loader_args, batch_size=HPARAMS['val_batch_size'],shuffle=False,collate_fn=fn,drop_last=False)
-        if infer_loader is None and infer_dataset:
+        if infer_loader is None and infer_dataset is not None:
             fn=create_collate_fn(infer_dataset,'infer_')
             if Experiment.get('create_infer_loader_fn'):
                 infer_loader = Experiment['create_infer_loader_fn'](infer_dataset,batch_size=HPARAMS['infer_batch_size'])
             else:
                 infer_loader = DataLoader(infer_dataset, **kw_data_loader_args, batch_size=HPARAMS['infer_batch_size'],shuffle=False,collate_fn=fn,drop_last=False)
 
-    if train_dataset:
-        Runtime['total_train_size']=len(train_dataset)
-        logger.info('Train samples:{}'.format(Runtime['total_train_size']))
-        Runtime['total_train_batches']=len(train_loader)
-    if val_dataset:
-        Runtime['total_val_size']=len(val_dataset)
-        logger.info('Val samples:{}'.format(Runtime['total_val_size']))
-        Runtime['total_val_batches']=len(val_loader)
-    if infer_dataset:
-        Runtime['total_infer_size']=len(infer_dataset)
-        logger.info('Infer samples:{}'.format(Runtime['total_infer_size']))
-        Runtime['total_infer_batches']=len(infer_loader)
 
     if action=='train':
         assert train_loader
+        Runtime['total_train_batches']=len(train_loader)
     if action=='val':
         assert val_loader
+        Runtime['total_val_batches']=len(val_loader)
     if action=='infer':
         assert infer_loader
+        Runtime['total_infer_batches']=len(infer_loader)
     
     list(map(lambda x:x.to(device),custom_models))
     list(map(lambda x:x.to(device),loss_criterions))
@@ -701,6 +704,7 @@ def train_wrapper():
     train_loss_info={}
     val_loss_info={}
     run_experiment_callback('pre_train_fn')
+    Runtime['batches_done']=0
     for epoch in range(start_epoch,HPARAMS['n_epochs']):
         if sig_int_flag:
             print('Exit Training\n')
@@ -709,7 +713,6 @@ def train_wrapper():
             Experiment['train_sampler'].set_epoch(epoch)
         Runtime['epoch']=epoch
         Runtime['trace']='epoch_train'
-        Runtime['batches_done']=0
         start_time = time.time()
         train_loss_info,train_insight = epoch_train(Runtime,Experiment)
         if sig_int_flag:
@@ -928,6 +931,12 @@ def load_checkpoints():
         start_epoch=use_checkpoint+1
     else:
         start_epoch=0   
+        custom_models=Experiment.get('custom_models')
+        if Experiment.get('model_init_fn'):
+            for model in custom_models:
+                model.apply(Experiment['model_init_fn'])
+        if Experiment.get('init_models_weights'):
+            Experiment['init_models_weights'](custom_models)
 
 
 def load_experiment(experiment_dir,experiment_src_path):
@@ -1241,7 +1250,7 @@ if __name__=="__main__":
     log_hparams()
 
     run_experiment_callback("init_fn")
-
+    
     load_checkpoints()
     train_wrapper()
     save_models()
