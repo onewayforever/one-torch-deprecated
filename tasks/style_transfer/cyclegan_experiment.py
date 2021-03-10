@@ -375,7 +375,6 @@ def cyclegan_train_fn(runtime,experiment):
 
 
 def cyclegan_val_fn(runtime,experiment):
-#def cyclegan_val_fn(models,criterions,data,target,device):
     device = experiment['device']
     data = runtime['input']
     models = experiment['custom_models']
@@ -488,7 +487,6 @@ Experiment={
                'lr_scheduler':'StepLR',
                'StepLR':{'step_size':3,'gamma':0.8},
                'Adam':{'betas':(0.5,0.999)},
-               "minibatch_insight_interval":400
               },
     # Define Experiment Model
     "custom_models":[G_AB,G_BA,D_A,D_B],
@@ -511,4 +509,5 @@ Experiment={
     "custom_val_fn":cyclegan_val_fn,
     #"post_batch_train_fn":[epoch_val_fn,(otu.batch_save_image,{'format_batch':combine_2sets,'interval':5})],
     "post_batch_val_fn":(otu.batch_save_image,{'format_batch':combine_2sets,'interval':1}),
+    "train_validate_each_n_batch":400,
 }

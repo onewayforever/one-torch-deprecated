@@ -28,34 +28,34 @@ bert_tokenizer = AutoTokenizer.from_pretrained(os.path.join(DATA_SET,"ernie-1.0"
 
 
 #bert_tokenizer=BertTokenizer.from_pretrained('bert-base-chinese')
-print(len(bert_tokenizer.vocab))
+#print(len(bert_tokenizer.vocab))
 tokens = bert_tokenizer.tokenize('[CLS]ºÃÏñÊÇ')
-print(tokens)
+#print(tokens)
 tokens = bert_tokenizer.tokenize('ÊÇÊ²Ã´')
-print(tokens)
+#print(tokens)
 
 init_token = bert_tokenizer.cls_token
 eos_token = bert_tokenizer.sep_token
 pad_token = bert_tokenizer.pad_token
 unk_token = bert_tokenizer.unk_token
 
-print(init_token, eos_token, pad_token, unk_token)
+#print(init_token, eos_token, pad_token, unk_token)
 init_token_idx = bert_tokenizer.convert_tokens_to_ids(init_token)
 eos_token_idx = bert_tokenizer.convert_tokens_to_ids(eos_token)
 pad_token_idx = bert_tokenizer.convert_tokens_to_ids(pad_token)
 unk_token_idx = bert_tokenizer.convert_tokens_to_ids(unk_token)
 
-print(init_token_idx, eos_token_idx, pad_token_idx, unk_token_idx)
+#print(init_token_idx, eos_token_idx, pad_token_idx, unk_token_idx)
 init_token_idx = bert_tokenizer.cls_token_id
 eos_token_idx = bert_tokenizer.sep_token_id
 pad_token_idx = bert_tokenizer.pad_token_id
 unk_token_idx = bert_tokenizer.unk_token_id
 
-print(init_token_idx, eos_token_idx, pad_token_idx, unk_token_idx)
+#print(init_token_idx, eos_token_idx, pad_token_idx, unk_token_idx)
 
 max_input_length = bert_tokenizer.max_model_input_sizes['bert-base-chinese']
 
-print(max_input_length)
+#print(max_input_length)
 
 def tokenize_and_cut(sentence):
     #tokens = bert_tokenizer.tokenize('[CLS]' + sentence) 
@@ -326,8 +326,6 @@ Experiment={
                'lr':2e-4,
                'loader_n_worker':4,
                'batch_size':256,
-               'checkpoint_n_epoch':10,
-               'train_epoch_val_n_batch':-1,
                'Adam':{'betas':(0.5,0.999)}
               },
     # Define Experiment Model
@@ -350,6 +348,9 @@ Experiment={
     "post_batch_val_fn":otu.batch_result_extract,
     "post_epoch_train_fn":(otu.epoch_insight_classification,{'nclass':N_class}),
     "post_batch_train_fn":otu.batch_result_extract,
-    "validate_batch_val_result_fn":validate_batch_val_result_fn
+    "validate_batch_val_result_fn":validate_batch_val_result_fn,
+    "checkpoint_n_epoch":10,
+    "train_validate_each_n_epoch":1,
+    "train_validate_final_with_best":True
 }
 

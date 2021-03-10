@@ -93,7 +93,9 @@ Experiment={
     "post_batch_val_fn":otu.batch_result_extract,
     "post_epoch_train_fn":(otu.epoch_insight_classification,{'nclass':N_class}),
     "post_batch_train_fn":otu.batch_result_extract,
-    "validate_batch_val_result_fn":validate_batch_val_result_fn
+    "validate_batch_val_result_fn":validate_batch_val_result_fn,
+    "train_validate_each_n_epoch":2,
+    "train_validate_final_with_best":True
 }
 
 

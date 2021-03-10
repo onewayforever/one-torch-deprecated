@@ -106,6 +106,6 @@ Experiment={
     "loss_evaluation_fn":loss_evaluation_fn,
     # Define function to deep insight result in each iteration, can be None
     #"epoch_insight_fn":None, #epoch_insight#None #one_torch_utils.create_default_epoch_insight_fn(N_class)
-    "post_batch_train_fn":(otu.batch_save_image,{'format_batch':lambda x:x['output'][0].view(-1,1,28,28)})
+    "post_batch_train_fn":(otu.batch_save_image,{'format_batch':lambda x:x['output'][0].view(-1,1,28,28),'interval':600})
 }
 

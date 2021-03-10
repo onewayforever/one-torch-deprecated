@@ -177,8 +177,23 @@ def save_one_img_result(path,item):
     label=item.get('label')
     #print(item['numpy'].shape)
     cv2.imwrite(os.path.join(path,'{}_{}.jpg'.format(result_id,label)),item['numpy'])
+
+def get_results_path(runtime,file_type,tag):
+    results_type=runtime['results'][file_type]
+    if results_type.get(tag) is None:
+        runtime_id=runtime.get('runtime_id')
+        experiment_home=Experiment.get('home')
+        os.makedirs(os.path.join(experiment_home,'results',runtime_id),exist_ok=True) 
+        os.makedirs(os.path.join(experiment_home,'results',runtime_id,tag),exist_ok=True) 
+        os.makedirs(os.path.join(experiment_home,'results',runtime_id,tag,file_type),exist_ok=True) 
+        dir_path=os.path.join(experiment_home,'results',runtime_id,tag,file_type)
+        runtime['results'][file_type][tag]={'path':dir_path}
+    else:
+        dir_path=results_type[tag]['path']
+    return dir_path
     
 def save_results_to_image(runtime,experiment,tag,results):
+    '''
     results_img=runtime['results']['img']
     if results_img.get(tag) is None:
         runtime_id=runtime.get('runtime_id')
@@ -190,6 +205,8 @@ def save_results_to_image(runtime,experiment,tag,results):
         runtime['results']['img'][tag]={'path':img_dir_path}
     else:
         img_dir_path=results_img[tag]['path']
+    '''
+    img_dir_path=get_results_path(runtime,'img',tag)
 
     for item in results:
         save_one_img_result(img_dir_path,item)
@@ -204,7 +221,7 @@ def get_home_path(dir_name):
     experiment_home=Experiment.get('home')
     return os.path.join(experiment_home,dir_name)
 
-def batch_save_image(runtime,experiment,ret,dir='images',combine=(5,5),format_batch=None,interval=100,start=0):
+def batch_save_image(runtime,experiment,ret,dir='images',combine=(5,5),format_batch=None,interval=0,start=0):
     output = runtime.get('output')
     #epoch = runtime.get('epoch')
     #total = runtime.get('total_train_batches')
@@ -213,9 +230,12 @@ def batch_save_image(runtime,experiment,ret,dir='images',combine=(5,5),format_ba
     batches_done = runtime['batches_done']
     if batches_done<start:
         return ret
-    if batches_done % interval != 0:
+    if interval>0 and batches_done % interval != 0:
         return ret
-    filename = os.path.join(get_home_path(dir),'{:0>6d}.jpg'.format(batches_done))
+    if runtime['step']=='train':
+        filename = os.path.join(get_home_path(dir),'{:0>6d}.jpg'.format(batches_done))
+    else:
+        filename = os.path.join(get_results_path(runtime,'img',dir),'{:0>6d}.jpg'.format(batches_done))
     r,w=combine
     if format_batch:
         img_data = format_batch(runtime)

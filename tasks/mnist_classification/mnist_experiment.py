@@ -7,6 +7,35 @@ import one_torch_utils as otu
 from torchvision import datasets, transforms
 
 N_class=10
+# VAE model
+class VAE(nn.Module):
+    def __init__(self, image_size=784, h_dim=400, z_dim=2):
+        super(VAE, self).__init__()
+        self.fc1 = torch.nn.Linear(image_size, h_dim)
+        self.fc2 = torch.nn.Linear(h_dim, z_dim) 
+        self.fc3 = torch.nn.Linear(h_dim, z_dim)
+        self.fc4 = torch.nn.Linear(z_dim, h_dim)
+        self.fc5 = torch.nn.Linear(h_dim, image_size)
+        
+    def encode(self, x):
+        h = F.relu(self.fc1(x))
+        return self.fc2(h), self.fc3(h)
+    
+    def reparameterize(self, mu, log_var):
+        std = torch.exp(log_var/2)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def decode(self, z):
+        h = F.relu(self.fc4(z))
+        return F.sigmoid(self.fc5(h))
+    
+    def forward(self, x):
+        mu, log_var = self.encode(x)
+        z = self.reparameterize(mu, log_var)
+        x_reconst = self.decode(z)
+        return x_reconst, mu, log_var
+
 
 class Net(nn.Module):
     def __init__(self):
@@ -67,7 +96,6 @@ Experiment={
     "hparams":{'optim':'Adam',
                'lr':2e-4,
                'loader_n_worker':4,
-               'checkpoint_n_epoch':2,
                'Adam':{'betas':(0.5,0.999)}
               },
     # Define Experiment Model
@@ -88,5 +116,7 @@ Experiment={
     "post_batch_val_fn":otu.batch_result_extract,
     "post_epoch_train_fn":(otu.epoch_insight_classification,{'nclass':N_class}),
     "post_batch_train_fn":otu.batch_result_extract,
-    "validate_batch_val_result_fn":validate_batch_val_result_fn
+    "validate_batch_val_result_fn":validate_batch_val_result_fn,
+    "train_validate_each_n_epoch":1,
+    "train_validate_final_with_best":True
 }

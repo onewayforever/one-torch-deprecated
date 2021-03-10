@@ -166,5 +166,5 @@ Experiment={
     "loss_evaluation_fn":None,
     # Define function to deep insight result in each iteration, can be None
     "custom_train_fn":gan_train_fn,
-    "post_batch_train_fn":otu.batch_save_image
+    "post_batch_train_fn":(otu.batch_save_image,{'interval':600})
 }
