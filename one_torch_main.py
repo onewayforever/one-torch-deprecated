@@ -81,7 +81,7 @@ EXPERIMENT_DEFAULT={
         'log_interval':0,
         'experiment_path':None,
         'use_tensorboard':False,
-        'train_epoch_val_n_batch':1,     # only validate n batch while training 
+        'validate_n_batch_in_train':1,     # only validate n batch while training 
         'train_validate_each_n_batch':0, # validate on every n batch 
         'train_validate_each_n_epoch':0,  # validate on every n epoch
         'train_validate_final_with_best':False  # validate at the end of trainning with best model
@@ -376,14 +376,14 @@ def validate(Runtime,Experiment):
     run_experiment_callback('pre_epoch_val_fn')
     if Runtime['step']=='validate':
         run_experiment_callback('validate_pre_epoch_val_result_fn')
-    train_epoch_val_n_batch = Experiment['train_epoch_val_n_batch']
+    validate_n_batch_in_train = Experiment['validate_n_batch_in_train']
     total_num=0
     with torch.no_grad():
         for batch_idx, original_data in enumerate(val_loader):
             #print(batch_idx)
             if Runtime['step']=='train' and sig_int_flag:
                 break
-            if Runtime['step']=='train' and train_epoch_val_n_batch>0 and batch_idx >= train_epoch_val_n_batch:
+            if Runtime['step']=='train' and validate_n_batch_in_train > 0 and batch_idx >= validate_n_batch_in_train :
                 break
             data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data)
             [data, target] = to_device([data,target],device)
@@ -447,7 +447,6 @@ def inference(Runtime,Experiment):
     #epoch_insight_record_fn=Experiment.get('val_epoch_insight_record_fn')
     #epoch_insight_fn=Experiment.get('val_epoch_insight_fn')
     #Runtime['epoch_results']=[]
-    #train_epoch_val_n_batch = Experiment['hparams']['train_epoch_val_n_batch']
     with torch.no_grad():
         for batch_idx, original_data in enumerate(infer_loader):
             #print(batch_idx)
@@ -510,11 +509,13 @@ def init_experiment(action):
     #    HPARAMS['batch_size']=max(1,int(HPARAMS['batch_size']/20))
     #    HPARAMS['train_batch_size']=max(1,int(HPARAMS['train_batch_size']/20))
     #    HPARAMS['val_batch_size']=max(1,int(HPARAMS['val_batch_size']/20))
-    print(HPARAMS)
+    #print(HPARAMS)
     train_path=Experiment['train_dataset_path']
     val_path=Experiment['val_dataset_path']
     infer_path=Experiment['infer_dataset_path']
-    print(infer_path)
+    #print(train_path)
+    #print(val_path)
+    #print(infer_path)
     ## Load Dataset ##
     train_dataset=None
     val_dataset=None
@@ -566,6 +567,7 @@ def init_experiment(action):
     if HPARAMS['loader_n_worker']>0:
         kw_data_loader_args['num_workers']=HPARAMS['loader_n_worker'] 
    
+    print('dataset',train_dataset)
 
     if ddp_flag:
         if train_loader is None and train_dataset is not None:
@@ -591,11 +593,13 @@ def init_experiment(action):
                 infer_loader = torch.utils.data.DataLoader(infer_dataset,batch_size=HPARAMS['infer_batch_size'], shuffle=False, sampler=infer_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=False)
     else:
         if train_loader is None and train_dataset is not None:
+            print('dataset',train_dataset)
             fn=create_collate_fn(train_dataset)
             if Experiment.get('create_train_loader_fn'):
                 train_loader = Experiment['create_train_loader_fn'](train_dataset,batch_size=HPARAMS['train_batch_size'])
             else:
                 train_loader = DataLoader(train_dataset, **kw_data_loader_args, batch_size=HPARAMS['train_batch_size'],shuffle=True,collate_fn=fn,drop_last=True)
+                print('loader',train_loader)
         if val_loader is None and val_dataset is not None:
             fn=create_collate_fn(val_dataset)
             if Experiment.get('create_val_loader_fn'):
@@ -1088,7 +1092,9 @@ def update_hparams_by_conf(action,filename):
             if params is None:
                 continue
             for k in params:
-                if k in ['dataset_path','batch_size']:
+                if k in ['dataset_path']:
+                    Experiment['_'.join([a,k])]=params[k]
+                elif k in ['batch_size']:
                     Experiment['hparams'][a+k]=params[k]
                 else:
                     Experiment['hparams'][k]=params[k]
@@ -1129,6 +1135,12 @@ def update_config_by_args(args):
 def log_hparams():
     logger.info('HPARAMS:')
     logger.info(Experiment['hparams'])
+    logger.info('CONFIGS:')
+    config={}
+    for k in EXPERIMENT_DEFAULT:
+        config[k]=Experiment[k]
+    logger.info(config)
+    logger.info('RUNTIME:')
     logger.info(Runtime)
     if Runtime['__rank']==0 and tb_writer:
         print(Experiment['hparams'])

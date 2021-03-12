@@ -1,0 +1,8 @@
+train:
+  dataset_path: /dev/shm/yolo_2014/train2014_tiny.txt
+
+val:
+  dataset_path: /dev/shm/yolo_2014/val2014_tiny.txt
+
+infer:
+  dataset_path: /dev/shm/yolo_2014/samples
