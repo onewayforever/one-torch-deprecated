@@ -8,6 +8,7 @@ import shutil
 import matplotlib.pyplot as plt
 import random
 import csv
+import cmd
 
 Runtime=None
 Experiment=None
@@ -330,3 +331,29 @@ class ReplayBuffer:
                 else:
                     to_return.append(element)
         return torch.cat(to_return)
+
+def preview_tensor(data):
+    shape_list=[]
+    if isinstance(data,tuple) or isinstance(data,list):
+        for item in data:
+            print(item)
+            if hasattr(item,'shape'):
+                shape_list.append(item.shape) 
+            else:
+                shape_list.append('_') 
+    print(shape_list)
+
+class CLI(cmd.Cmd):
+    def __init__(self,prompt):
+        cmd.Cmd.__init__(self)
+        self.prompt = prompt  # define command prompt
+
+    def do_quit(self, arg):
+        return True
+
+    def help_quit(self):
+        print("syntax: quit -- terminatesthe application")
+
+    # define the shortcuts
+    do_q = do_quit
+

@@ -19,6 +19,14 @@ import shutil
 import torch.distributed as dist
 import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from types import MethodType
+import readline
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gb18030') 
+
+torch.set_printoptions(linewidth=128)
+
+readline.parse_and_bind('tab: complete')
 
 sig_int_flag=False
 
@@ -465,6 +473,35 @@ def inference(Runtime,Experiment):
 
     return 
 
+def preview_dataset(dataset,loader):
+    global Runtime 
+    global Experiment
+    def preview_batch(self,arg):
+        if loader is not None:
+            batch=next(iter(loader))
+            batch = Experiment['data_preprocess_fn'](Runtime,Experiment,batch)  
+            #print(batch)
+            otu.preview_tensor(batch)
+            Experiment['preview_batch_item'](batch)
+    def preview_nth_data(self,arg):
+        try:
+            n = int(arg)
+            assert n>=0 and n<=max_index
+        except Exception as e:
+            print('please input an index number [0 - {}]'.format(max_index))
+            return
+        Experiment['preview_dataset_item'](dataset[n])
+
+    if loader is not None:
+        otu.CLI.do_batch = preview_batch
+        otu.CLI.do_b = otu.CLI.do_batch 
+    if dataset is not None:
+        max_index=len(dataset)-1
+        otu.CLI.do_data = preview_nth_data
+        otu.CLI.do_d = otu.CLI.do_data
+    cli=otu.CLI('preview > ')
+    cli.cmdloop(intro=" ==== Preview Dataset ==== ")
+
 def init_experiment(action):
     global Experiment
     global Runtime
@@ -567,7 +604,7 @@ def init_experiment(action):
     if HPARAMS['loader_n_worker']>0:
         kw_data_loader_args['num_workers']=HPARAMS['loader_n_worker'] 
    
-    print('dataset',train_dataset)
+    #print('dataset',train_dataset)
 
     if ddp_flag:
         if train_loader is None and train_dataset is not None:
@@ -593,13 +630,13 @@ def init_experiment(action):
                 infer_loader = torch.utils.data.DataLoader(infer_dataset,batch_size=HPARAMS['infer_batch_size'], shuffle=False, sampler=infer_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=False)
     else:
         if train_loader is None and train_dataset is not None:
-            print('dataset',train_dataset)
+            #print('dataset',train_dataset)
             fn=create_collate_fn(train_dataset)
             if Experiment.get('create_train_loader_fn'):
                 train_loader = Experiment['create_train_loader_fn'](train_dataset,batch_size=HPARAMS['train_batch_size'])
             else:
                 train_loader = DataLoader(train_dataset, **kw_data_loader_args, batch_size=HPARAMS['train_batch_size'],shuffle=True,collate_fn=fn,drop_last=True)
-                print('loader',train_loader)
+                #print('loader',train_loader)
         if val_loader is None and val_dataset is not None:
             fn=create_collate_fn(val_dataset)
             if Experiment.get('create_val_loader_fn'):
@@ -623,6 +660,12 @@ def init_experiment(action):
     if action=='infer':
         assert infer_loader
         Runtime['total_infer_batches']=len(infer_loader)
+    if action=='view':
+        if train_dataset is not None or train_loader is not None:
+            preview_dataset(train_dataset,train_loader)
+        else:
+            print('ERROR: No Dataset loaded, Please check!')
+        return
     
     list(map(lambda x:x.to(device),custom_models))
     list(map(lambda x:x.to(device),loss_criterions))
@@ -719,6 +762,7 @@ def train_wrapper():
     run_experiment_callback('pre_train_fn')
     Runtime['batches_done']=0
     checkpoint_n_epoch=Experiment.get('checkpoint_n_epoch') if Experiment.get('checkpoint_n_epoch') else 0
+    check_loss=None
     for epoch in range(start_epoch,HPARAMS['n_epochs']):
         if sig_int_flag:
             print('Exit Training\n')
@@ -785,6 +829,9 @@ def train_wrapper():
         train_epoch_list.append({'train':train_loss_info,'val':val_loss_info})
         #use early stop
         if HPARAMS['early_stop'] > 0:
+            if check_loss is None:
+                print('ERROR: loss field should be set in train_loss_info or val_loss_info, Check code or disable early_stop')
+                exit(0)
             if check_loss < stop_loss:
                 stop_loss = check_loss
                 patience = HPARAMS['early_stop']
@@ -877,6 +924,10 @@ def parse_experiment_info(Experiment):
         Experiment['custom_parameters'] = []
     if Experiment.get('loss_evaluation_fn') is None:
         Experiment['loss_evaluation_fn'] = default_evaluation_fn
+    if Experiment.get('preview_dataset_item') is None:
+        Experiment['preview_dataset_item'] = print 
+    if Experiment.get('preview_batch_item') is None:
+        Experiment['preview_batch_item'] = otu.preview_tensor
     if Experiment.get('hparams') is None:
         Experiment['hparams']=HPARAMS_DEFAULT
     else:
@@ -1117,7 +1168,7 @@ def update_config_by_args(args):
         print('Use GPUs {}'.format(gpus))
     os.environ["CUDA_VISIBLE_DEVICES"] = gpus
     Runtime['gpus']=list(map(lambda x:int(x),gpus.split(',')))
-    if args.action=='train':
+    if args.action=='train' or args.action=='view':
         if args.dataset:
             paths = args.dataset.split(',')
             if len(paths)==1:
@@ -1211,7 +1262,7 @@ def check_distributed(args):
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser(prog='global_behavior')
-    parser.add_argument("-a","--action",choices=['train','val','infer'],help="actions to take")
+    parser.add_argument("-a","--action",choices=['train','val','infer','view'],help="actions to take")
     parser.add_argument("-d",'--dataset',help="Dataset path(s) to load. for trainning, train_path,val_path separate by comma,val_path can be omitted")
     parser.add_argument('--no_cuda', action='store_true', help='disables CUDA training')
     parser.add_argument('--seed', type=int,  metavar='S',help='Random seed (default: 12345)')
@@ -1228,7 +1279,20 @@ if __name__=="__main__":
     parser.add_argument("--use_checkpoint",type=int,default=-1,help="to use the Nth checkpoint in the experiment to initialize train weights")
     args = parser.parse_args()
     check_distributed(args)
-    if args.action=='val':
+    if args.action=='view':
+        assert args.src is not None
+        just_a_try = True
+        #print('step 1')
+        create_experiment(args.src)
+        if args.hparam:
+            update_hparams_by_conf('train',args.hparam)
+        update_config_by_args(args)
+        #print('step 2')
+        logger = otu.logger_init()
+        init_experiment('view')
+        #print('step 3')
+        exit(0)
+    elif args.action=='val':
         assert args.experiment_path is not None
         load_experiment(args.experiment_path,args.src)
         if args.hparam:
