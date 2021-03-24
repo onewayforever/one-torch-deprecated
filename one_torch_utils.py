@@ -336,12 +336,11 @@ def preview_tensor(data):
     shape_list=[]
     if isinstance(data,tuple) or isinstance(data,list):
         for item in data:
-            print(item)
-            if hasattr(item,'shape'):
-                shape_list.append(item.shape) 
-            else:
-                shape_list.append('_') 
-    print(shape_list)
+            preview_tensor(item)
+    else:
+        print(data)
+        if hasattr(data,'shape'):
+            print(data.shape)
 
 class CLI(cmd.Cmd):
     def __init__(self,prompt):

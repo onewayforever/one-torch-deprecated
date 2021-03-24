@@ -25,6 +25,7 @@ import io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gb18030') 
 
 torch.set_printoptions(linewidth=128)
+#torch.set_printoptions(threshold=12000)
 
 readline.parse_and_bind('tab: complete')
 
@@ -134,6 +135,7 @@ def run_experiment_callback(fn_name,*params):
             ret=fn_info(Runtime,Experiment,ret)
         assert ret is not None
     assert ret is not None
+    sys.stdout.flush()
     return ret
 
 
@@ -263,6 +265,8 @@ def default_evaluation_fn(runtime,experiment):
     assert len(loss_criterions) == 1
     loss_criterion = loss_criterions[0]
     #print(output.shape,target.shape)
+    if isinstance(output,tuple):
+        output = output[0]
     loss = loss_criterion(output,target) 
     return loss,loss.item()
     
@@ -363,7 +367,6 @@ def epoch_train(Runtime,Experiment):
     #total_num=len(train_loader)
     for k in loss_info:
         train_loss_info[k]/=total_num
-
 
     return train_loss_info,epoch_insight_result
 
@@ -507,7 +510,7 @@ def init_experiment(action):
     global Runtime
     Runtime['step']='init'
     HPARAMS=Experiment['hparams']
-    custom_models=Experiment['custom_models']
+    custom_models=Experiment.get('custom_models')
     loss_criterions=Experiment['loss_criterions']
     torch.manual_seed(HPARAMS['seed'])
     use_cuda = not HPARAMS['no_cuda'] and torch.cuda.is_available()
@@ -667,6 +670,16 @@ def init_experiment(action):
             print('ERROR: No Dataset loaded, Please check!')
         return
     
+
+    if custom_models is None and Experiment.get('create_custom_models_fn') is not None:
+        custom_models = Experiment.get('create_custom_models_fn')(Runtime,Experiment)
+        Experiment['custom_models'] = custom_models
+
+    if custom_models is None:
+        print('Error: Need define torch models, by custom_models objects  or by create_custom_models_fn')
+        exit(0)
+
+
     list(map(lambda x:x.to(device),custom_models))
     list(map(lambda x:x.to(device),loss_criterions))
     
@@ -709,13 +722,13 @@ def train_wrapper():
     global best_loss
     global best_epoch
     Runtime['runtime_id'] = 'train_{}'.format(now) 
+    init_experiment('train')
     HPARAMS=Experiment['hparams']
     custom_models = Experiment['custom_models']
     custom_optimizers = Experiment['custom_optimizers']
     custom_schedulers = Experiment['custom_schedulers']
     #global loss_criterions
     custom_parameters = Experiment['custom_parameters']
-    init_experiment('train')
     train_loader = Experiment['train_loader']
     val_loader = Experiment['val_loader']
 
@@ -910,8 +923,8 @@ def inference_wrapper():
 
 
 def parse_experiment_info(Experiment):
-    custom_models=Experiment.get('custom_models')
-    assert custom_models is not None
+    #custom_models=Experiment.get('custom_models')
+    #assert custom_models is not None
     if Experiment.get('data_preprocess_fn') is None:
         Experiment['data_preprocess_fn'] = default_data_preprocess_fn
     if Experiment.get('custom_train_fn') is None:
@@ -922,6 +935,8 @@ def parse_experiment_info(Experiment):
         Experiment['custom_infer_fn'] = default_infer_fn
     if Experiment.get('custom_parameters') is None:
         Experiment['custom_parameters'] = []
+    if Experiment.get('loss_criterions') is None:
+        Experiment['loss_criterions'] = []
     if Experiment.get('loss_evaluation_fn') is None:
         Experiment['loss_evaluation_fn'] = default_evaluation_fn
     if Experiment.get('preview_dataset_item') is None:
