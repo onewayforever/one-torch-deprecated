@@ -1,5 +1,6 @@
 import sys
 import os
+import json
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -22,7 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 from types import MethodType
 import readline
 import io
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gb18030') 
+#sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gb18030') 
 
 torch.set_printoptions(linewidth=128)
 #torch.set_printoptions(threshold=12000)
@@ -62,7 +63,8 @@ HPARAMS_DEFAULT = {
         'train_batch_size':64,
         'val_batch_size':64,
         'infer_batch_size':64,
-        'no_cuda':False,
+        #'no_cuda':True,
+        #'no_cuda':False,
         'loader_n_worker':0,
         'pin_memory':True,
         'optim':'SGD',
@@ -80,6 +82,7 @@ HPARAMS_DEFAULT = {
 }
 
 EXPERIMENT_DEFAULT={
+        'no_cuda':False,
         'train_dataset_path':None,
         'val_dataset_path':None,
         'infer_dataset_path':None,
@@ -481,7 +484,18 @@ def preview_dataset(dataset,loader):
     global Experiment
     def preview_batch(self,arg):
         if loader is not None:
-            batch=next(iter(loader))
+            try:
+                n = int(arg)
+                assert n>=0 and n<=max_batch
+            except Exception as e:
+                print('please input an index number [0 - {}]'.format(max_batch))
+                return
+            iterator = iter(loader)
+            while True: 
+                batch=next(iterator)
+                n-=1
+                if n<=0:
+                    break
             batch = Experiment['data_preprocess_fn'](Runtime,Experiment,batch)  
             #print(batch)
             otu.preview_tensor(batch)
@@ -496,6 +510,7 @@ def preview_dataset(dataset,loader):
         Experiment['preview_dataset_item'](dataset[n])
 
     if loader is not None:
+        max_batch=len(loader)-1
         otu.CLI.do_batch = preview_batch
         otu.CLI.do_b = otu.CLI.do_batch 
     if dataset is not None:
@@ -505,6 +520,24 @@ def preview_dataset(dataset,loader):
     cli=otu.CLI('preview > ')
     cli.cmdloop(intro=" ==== Preview Dataset ==== ")
 
+def interact_wrapper():
+    global Runtime
+    global Experiment
+    prompt = Experiment.get('interact_prompt')
+    if prompt is None:
+        prompt = "#> "
+    intro= Experiment.get('interact_intro')
+    if intro is None:
+        intro = " Interact "
+    cmds = Experiment.get('interact_cmd')
+    if isinstance(cmds,list):
+        for cmd,function in cmds:
+            def cli_function(self,args):
+                return function(Runtime,Experiment,args)
+            setattr(otu.CLI,'do_{}'.format(cmd),cli_function)
+    cli=otu.CLI(prompt)
+    cli.cmdloop(intro=" ==== {} ==== ".format(intro))
+
 def init_experiment(action):
     global Experiment
     global Runtime
@@ -513,7 +546,7 @@ def init_experiment(action):
     custom_models=Experiment.get('custom_models')
     loss_criterions=Experiment['loss_criterions']
     torch.manual_seed(HPARAMS['seed'])
-    use_cuda = not HPARAMS['no_cuda'] and torch.cuda.is_available()
+    use_cuda = not Experiment['no_cuda'] and torch.cuda.is_available()
     device = torch.device("cuda" if use_cuda else "cpu")
     #gpu_count = torch.cuda.device_count()
     #print('gpu_count',gpu_count)
@@ -682,6 +715,7 @@ def init_experiment(action):
 
     list(map(lambda x:x.to(device),custom_models))
     list(map(lambda x:x.to(device),loss_criterions))
+
     
 
     if ddp_flag:
@@ -976,11 +1010,30 @@ def parse_experiment_info(Experiment):
         
 
 def load_models(path):
+    global Runtime
     global Experiment
+    if Experiment.get('pre_load_models') is not None:
+        Experiment.get('pre_load_models')(path)
     custom_models=Experiment.get('custom_models')
+    if custom_models is None and Experiment.get('create_custom_models_fn') is not None:
+        if Experiment.get('load_model_dynamic_params') is not None:
+            with open(os.path.join(path,"config.json")) as f:
+                data = json.load(f)
+            Experiment.get('load_model_dynamic_params')(data)
+        custom_models = Experiment.get('create_custom_models_fn')(Runtime,Experiment)
+        Experiment['custom_models'] = custom_models
+
     for idx,model in enumerate(custom_models):
         model_name = model._get_name()
-        model.load_state_dict(torch.load(os.path.join(path,"{}_{}.pt".format(model_name,idx))))
+        #print(model_name,os.path.join(path,"{}_{}.pt".format(model_name,idx)))
+        pickle=torch.load(os.path.join(path,"{}_{}.pt".format(model_name,idx)))
+        #print(pickle.keys())
+        #for k in pickle:
+        #    print(k,pickle[k].shape)
+        model.load_state_dict(pickle)
+        #model.load_state_dict(torch.load(os.path.join(path,"{}_{}.pt".format(model_name,idx))))
+    if Experiment.get('post_load_models') is not None:
+        Experiment.get('post_load_models')(path)
 
 
 def load_checkpoints():
@@ -1060,9 +1113,14 @@ def load_experiment(experiment_dir,experiment_src_path):
     otu.init(Runtime,Experiment)
 
     #custom_models=Experiment.get('custom_models')
+        
+    models_path=os.path.join(experiment_dir,'models')
+    print(models_path)
+    load_models(models_path)
     
     try:
         models_path=os.path.join(experiment_dir,'models')
+        #print(models_path)
         load_models(models_path)
         #for idx,model in enumerate(custom_models):
         #    model_name = model._get_name()
@@ -1196,6 +1254,11 @@ def update_config_by_args(args):
         if args.dataset:
             paths = args.dataset.split(',')
             Experiment['val_dataset_path']=paths[0]
+
+    use_cuda = not Experiment['no_cuda'] and torch.cuda.is_available()
+    print('use cuda',use_cuda) 
+    device = torch.device("cuda" if use_cuda else "cpu")
+    Experiment['device']=device
     
 
 def log_hparams():
@@ -1221,6 +1284,19 @@ def log_hparams():
         tb_writer.add_hparams(tmp,{})
 
 
+def __save_models(custom_models,path):
+    global Experiment
+    if Experiment.get('store_model_dynamic_params') is not None:
+        with open(os.path.join(path,"config.json"),'w') as f:
+            data = Experiment.get('store_model_dynamic_params')()
+            json.dump(data,f,indent=4)
+    
+    for idx,model in enumerate(custom_models):
+        model_name = model._get_name()
+        file_path = os.path.join(path,'{}_{}.pt'.format(model_name,idx))
+        torch.save(model.state_dict(),file_path)
+
+
 def save_models():
     if just_a_try:
         return
@@ -1229,18 +1305,21 @@ def save_models():
     models_path=os.path.join(experiment_home_dir,'models')
     print('Now saving models...')
     if best_epoch>0:
-        best_path = checkpoints_path=os.path.join(experiment_home_dir,'checkpoints','{}'.format(best_epoch))
+        best_path = os.path.join(experiment_home_dir,'checkpoints','{}'.format(best_epoch))
         if os.path.exists(best_path):
             logger.info('Save best checkpoint epoch:{} loss:{} as final models'.format(best_epoch,best_loss))
             shutil.rmtree(models_path)
             shutil.copytree(best_path,models_path)
+            if Experiment.get('post_save_models') is not None:
+                Experiment.get('post_save_models')(models_path)
             return
     
+    if Experiment.get('pre_save_models') is not None:
+        Experiment.get('pre_save_models')(models_path)
     custom_models = Experiment.get('custom_models')
-    for idx,model in enumerate(custom_models):
-        model_name = model._get_name()
-        file_path = os.path.join(models_path,'{}_{}.pt'.format(model_name,idx))
-        torch.save(model.state_dict(),file_path)
+    __save_models(custom_models,models_path)
+    if Experiment.get('post_save_models') is not None:
+        Experiment.get('post_save_models')(models_path)
     logger.info('### Save {} models to path:{}'.format(len(custom_models),models_path))
 
 
@@ -1256,10 +1335,7 @@ def save_checkpoints(epoch):
     checkpoints_home_dir=os.path.join(experiment_home_dir,'checkpoints')
     checkpoints_path=os.path.join(checkpoints_home_dir,'{}'.format(epoch))
     os.makedirs(checkpoints_path,exist_ok=True)
-    for idx,model in enumerate(custom_models):
-        model_name = model._get_name()
-        file_path = os.path.join(checkpoints_path,'{}_{}.pt'.format(model_name,idx))
-        torch.save(model.state_dict(),file_path)
+    __save_models(custom_models,checkpoints_path)
     logger.info('### Epoch {} Save {} models to checkpoint:{}'.format(epoch,len(custom_models),checkpoints_path))
 
 def check_distributed(args):
@@ -1277,7 +1353,7 @@ def check_distributed(args):
 
 if __name__=="__main__":
     parser = argparse.ArgumentParser(prog='global_behavior')
-    parser.add_argument("-a","--action",choices=['train','val','infer','view'],help="actions to take")
+    parser.add_argument("-a","--action",choices=['train','val','infer','view','interact'],help="actions to take")
     parser.add_argument("-d",'--dataset',help="Dataset path(s) to load. for trainning, train_path,val_path separate by comma,val_path can be omitted")
     parser.add_argument('--no_cuda', action='store_true', help='disables CUDA training')
     parser.add_argument('--seed', type=int,  metavar='S',help='Random seed (default: 12345)')
@@ -1324,6 +1400,15 @@ if __name__=="__main__":
         update_config_by_args(args)
         logger = otu.logger_init()
         inference_wrapper()
+        exit(0)
+    elif args.action=='interact':
+        assert args.experiment_path is not None
+        load_experiment(args.experiment_path,args.src)
+        if args.hparam:
+            update_hparams_by_conf('infer',args.hparam)
+        update_config_by_args(args)
+        logger = otu.logger_init()
+        interact_wrapper()
         exit(0)
     
     assert args.action =='train'

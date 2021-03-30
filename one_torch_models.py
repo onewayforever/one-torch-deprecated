@@ -70,6 +70,23 @@ class ResModelNd(torch.nn.Module):
                 x=self.layers[layer](x)
         return x
 
+def dense_layer(input_dim, output_dim, norm=None,activation=None, dropout=0):
+    dense = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, output_dim)
+    )
+    if isinstance(norm,torch.nn.Module):
+        dense.add_module(norm._get_name(),norm)
+    elif isinstance(norm,str):
+        layer = getattr(torch.nn.modules,norm)(output_dim) 
+        dense.add_module(norm,layer)
+    if isinstance(activation,torch.nn.Module):
+        dense.add_module(activation._get_name(),activation)
+    elif isinstance(activation,str):
+        layer = getattr(torch.nn.modules,activation)() 
+        dense.add_module(activation,layer)
+    if dropout>0:
+        dense.add_module("Dropout", nn.Dropout(dropout))
+    return dense
 
 def test_res1d():
     x = torch.randn(30,64,134)
