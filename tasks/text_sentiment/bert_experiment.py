@@ -78,7 +78,14 @@ def format_score(score):
 
 LABEL = data.Field(sequential=False,use_vocab=False,dtype = torch.float,preprocessing=format_score)
 
-
+#x = bert_tokenizer.tokenize("股票上涨了")
+#print(x)
+#y=TEXT.numericalize([['股'],['票'],['上'],['涨']])
+#text="股票上涨了"
+#y=TEXT.numericalize(["股票上涨了"])
+#arr = [bert_tokenizer.convert_tokens_to_ids(x) for x in text]
+#print(torch.tensor(arr))
+#print(y)
 
 scale=0.1
 def load_data(path):
@@ -244,7 +251,6 @@ class BERTGRUModel(nn.Module):
         #print("bert output",embedded.shape)
         #print(text[0])
         #print(embedded[0])
-        #st.write('embedded_shape',embedded.shape)
         #embedded = [sent len, batch size, emb dim]
         packed_output, hidden = self.gru(embedded)
 
@@ -259,7 +265,8 @@ class BERTGRUModel(nn.Module):
             #hidden = self.dropout(hidden)
             #fc1 = F.relu(self.fc1(hidden.squeeze(0)))
         #print("hidden 2",hidden.shape)
-        fc1 = F.relu(self.fc1(hidden.squeeze(0)))
+        fc1 = F.relu(self.fc1(hidden))
+        #fc1 = F.relu(self.fc1(hidden.squeeze(0)))
             #fc1 = F.relu(self.fc1(self.bn(hidden.squeeze(0))))
         fc2 = torch.relu(self.fc2(fc1))
         fc3 = self.fc3(fc2)
@@ -267,11 +274,6 @@ class BERTGRUModel(nn.Module):
         output = F.log_softmax(fc3, dim=1)
         #print('output',output.shape)
         return output
-        fc2 = F.relu(self.fc2(fc1))
-        #print(fc2.shape)
-        fc3 = torch.sigmoid(self.fc3(fc2))
-        #print(fc3.shape)
-        return fc3
 #print(repr(bert))
 
 
@@ -320,6 +322,31 @@ def validate_batch_val_result_fn(runtime,experiment,ret):
                 otu.save_results_to_csv(runtime,experiment,'errors',[[sen,pred[i].item(),target[i].item()]])
     return ret
 
+def check_sentiment_by_input(runtime,experiment,args):
+    #print(args)
+    #print(runtime)
+    #print(experiment)
+    model = experiment['custom_models'][0]
+    device = experiment['device']
+    text=args
+    model = model.eval()
+    with torch.no_grad():
+        #samples = TEXT.numericalize(text).view(1,-1)
+        samples = [bert_tokenizer.convert_tokens_to_ids(x) for x in text]
+        samples = [init_token_idx] + samples + [eos_token_idx]
+        #print(torch.tensor(arr))
+        #samples = bert_tokenizer.tokenize(text)
+        #print('samples',samples)
+        input_txt = torch.LongTensor(samples)
+        input_txt = input_txt.to(device).view(1,-1)
+        #input_txt = torch.cat([input_txt,input_txt],dim=0)
+        #print(input_txt,input_txt.shape)
+        output = model(input_txt)
+        #print(output)
+        sentiment = torch.argmax(output,dim=1).item()
+        print("Positive") if sentiment > 0 else print("Negtive")
+        
+
 
 Experiment={
     "hparams":{'optim':'Adam',
@@ -351,6 +378,7 @@ Experiment={
     "validate_batch_val_result_fn":validate_batch_val_result_fn,
     "checkpoint_n_epoch":10,
     "train_validate_each_n_epoch":1,
-    "train_validate_final_with_best":True
+    "train_validate_final_with_best":True,
+    "interact_cmd":[("c",check_sentiment_by_input,"c <input sentence to be checked>")]
 }
 

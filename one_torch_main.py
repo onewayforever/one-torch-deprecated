@@ -531,10 +531,16 @@ def interact_wrapper():
         intro = " Interact "
     cmds = Experiment.get('interact_cmd')
     if isinstance(cmds,list):
-        for cmd,function in cmds:
+        for cmd,function,helper in cmds:
             def cli_function(self,args):
                 return function(Runtime,Experiment,args)
+            def cli_help(self):
+                print(helper)
             setattr(otu.CLI,'do_{}'.format(cmd),cli_function)
+            setattr(otu.CLI,'help_{}'.format(cmd),cli_help)
+    else:
+        print('No cli cmd registered, please check')
+        return
     cli=otu.CLI(prompt)
     cli.cmdloop(intro=" ==== {} ==== ".format(intro))
 
@@ -856,10 +862,13 @@ def train_wrapper():
                 best_epoch=epoch
                 best_loss = epoch_loss
                 save_flag=True
+                save_models()
         if checkpoint_n_epoch>0 and (epoch % checkpoint_n_epoch==0):
             save_flag=True
-        if save_flag and epoch >= Experiment['checkpoint_warmup']:
-            save_checkpoints(epoch)
+            if epoch >= Experiment['checkpoint_warmup']:
+                save_checkpoints(epoch)
+        #if save_flag and epoch >= Experiment['checkpoint_warmup']:
+        #    save_checkpoints(epoch)
         loss_str=extract_loss_info(train_loss_info)
         epoch_log=f'Epoch: {epoch:02} | Elapse: {epoch_mins}m {epoch_secs}s |\tTrain: {loss_str} '
         if val_loader and Experiment['train_validate_each_n_epoch']>0:
@@ -1146,12 +1155,13 @@ def load_experiment(experiment_dir,experiment_src_path):
     exit(0)
 
     
-def create_experiment(experiment_src_path):
+def create_experiment(args):
     global Runtime 
     global Experiment
     global experiment_id
     global experiment_home_dir
     global tb_writer
+    experiment_src_path = args.src
     try:
         abs_path=os.path.abspath(experiment_src_path)
         module_dir,file_name=os.path.split(abs_path)
@@ -1162,35 +1172,50 @@ def create_experiment(experiment_src_path):
         #print('module file path',module.__file__)
     except Exception as e:
         print(e)
-        print('Please Check experiment src file')
+        print('Create Experiment Fail! Please Check experiment src file')
         exit(0)
 
     parse_experiment_info(Experiment)
+    if args.hparam:
+        update_hparams_by_conf('train',args.hparam)
+    update_config_by_args(args)
 
-    experiment_id='{}#{}'.format(module_name,now)
-    experiment_home_dir='experiment_home/{}'.format(experiment_id)
 
     if not just_a_try:
+        if Experiment.get('train_dataset_path') is None:
+            print('Need dataset to train')
+            exit(0)
+        dataset_name=os.path.split(Experiment.get('train_dataset_path'))[1].split('.')[0]
+
+        #print(Experiment.get('train_dataset_path'))
+        #print('dataset_name',dataset_name)
+
+        experiment_id='{}_{}#{}'.format(module_name,dataset_name,now)
+        experiment_home_dir='experiment_home/{}'.format(experiment_id)
+        #print(experiment_home_dir)
         os.makedirs(experiment_home_dir,exist_ok=True)
         os.makedirs(os.path.join(experiment_home_dir,'models'),exist_ok=True)
         os.makedirs(os.path.join(experiment_home_dir,'checkpoints'),exist_ok=True)
         os.makedirs(os.path.join(experiment_home_dir,'src'),exist_ok=True)
         os.makedirs(os.path.join(experiment_home_dir,'results'),exist_ok=True)
         shutil.copy(module.__file__,os.path.join(experiment_home_dir,'src'))
-        srcs=Experiment.get('src')
+        srcs=Experiment.get('codes_to_backup')
+        #print('srcs',srcs)
         if srcs and len(srcs)>0:
             src_dir=os.path.split(module.__file__)[0]
+            #print(src_dir)
             for f in srcs:
                 src=os.path.join(src_dir,f)
+                #print(src)
                 if os.path.isdir(src):
                     shutil.copytree(src,os.path.join(experiment_home_dir,'src',f))
                 else:
                     shutil.copy(src,os.path.join(experiment_home_dir,'src'))
         if Runtime['__rank']==0:
             tb_writer = SummaryWriter(os.path.join(experiment_home_dir,'tensorboard'))
-    Experiment['home']=experiment_home_dir
-    Experiment['id']=experiment_id
-    Experiment['tensorboard']=tb_writer
+        Experiment['home']=experiment_home_dir
+        Experiment['id']=experiment_id
+        Experiment['tensorboard']=tb_writer
 
     #update hparams by experiment hparams
     '''
@@ -1235,10 +1260,11 @@ def update_config_by_args(args):
             Experiment[key]=param
     gpus = os.getenv('CUDA_VISIBLE_DEVICES')
     if gpus:
-        print('Use environment GPUs {}'.format(gpus))
+        #print('Use environment GPUs {}'.format(gpus))
+        pass
     else:
         gpus = args.gpus
-        print('Use GPUs {}'.format(gpus))
+        #print('Use GPUs {}'.format(gpus))
     os.environ["CUDA_VISIBLE_DEVICES"] = gpus
     Runtime['gpus']=list(map(lambda x:int(x),gpus.split(',')))
     if args.action=='train' or args.action=='view':
@@ -1256,7 +1282,7 @@ def update_config_by_args(args):
             Experiment['val_dataset_path']=paths[0]
 
     use_cuda = not Experiment['no_cuda'] and torch.cuda.is_available()
-    print('use cuda',use_cuda) 
+    print('use gpus:{}'.format(gpus)) if use_cuda else print('use cpu')
     device = torch.device("cuda" if use_cuda else "cpu")
     Experiment['device']=device
     
@@ -1303,16 +1329,16 @@ def save_models():
     if Runtime['__rank']!=0:
         return
     models_path=os.path.join(experiment_home_dir,'models')
-    print('Now saving models...')
-    if best_epoch>0:
-        best_path = os.path.join(experiment_home_dir,'checkpoints','{}'.format(best_epoch))
-        if os.path.exists(best_path):
-            logger.info('Save best checkpoint epoch:{} loss:{} as final models'.format(best_epoch,best_loss))
-            shutil.rmtree(models_path)
-            shutil.copytree(best_path,models_path)
-            if Experiment.get('post_save_models') is not None:
-                Experiment.get('post_save_models')(models_path)
-            return
+    #print('Now saving models...')
+    #if best_epoch>0:
+    #    best_path = os.path.join(experiment_home_dir,'checkpoints','{}'.format(best_epoch))
+    #    if os.path.exists(best_path):
+    #        logger.info('Save best checkpoint epoch:{} loss:{} as final models'.format(best_epoch,best_loss))
+    #        shutil.rmtree(models_path)
+    #        shutil.copytree(best_path,models_path)
+    #        if Experiment.get('post_save_models') is not None:
+    #            Experiment.get('post_save_models')(models_path)
+    #        return
     
     if Experiment.get('pre_save_models') is not None:
         Experiment.get('pre_save_models')(models_path)
@@ -1374,10 +1400,10 @@ if __name__=="__main__":
         assert args.src is not None
         just_a_try = True
         #print('step 1')
-        create_experiment(args.src)
-        if args.hparam:
-            update_hparams_by_conf('train',args.hparam)
-        update_config_by_args(args)
+        create_experiment(args)
+        #if args.hparam:
+        #    update_hparams_by_conf('train',args.hparam)
+        #update_config_by_args(args)
         #print('step 2')
         logger = otu.logger_init()
         init_experiment('view')
@@ -1415,11 +1441,11 @@ if __name__=="__main__":
     assert args.src is not None
     just_a_try = not args.create
 
-    create_experiment(args.src)
+    create_experiment(args)
     
-    if args.hparam:
-        update_hparams_by_conf('train',args.hparam)
-    update_config_by_args(args)
+    #if args.hparam:
+    #    update_hparams_by_conf('train',args.hparam)
+    #update_config_by_args(args)
 
     logger = otu.logger_init(Experiment['log_file'],os.path.join(experiment_home_dir,'log') if not just_a_try else None)
     
@@ -1437,7 +1463,7 @@ if __name__=="__main__":
     
     load_checkpoints()
     train_wrapper()
-    save_models()
+    #save_models()  #save models by every improvement
     if Experiment.get('val_loader') and not just_a_try and Experiment['train_validate_final_with_best']:
         logger.info('Validate with best model')
         models_path=os.path.join(experiment_home_dir,'models')

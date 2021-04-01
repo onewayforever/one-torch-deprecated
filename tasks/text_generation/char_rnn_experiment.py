@@ -278,13 +278,13 @@ def generate_poem(begin,slen,plen,model,device):
     #samples = bert_tokenizer.encode(begin,add_special_tokens=False) #[:-1]
     with torch.no_grad():
         samples = TEXT.numericalize(begin).view(1,-1)
-        print('samples',samples)
+        #print('samples',samples)
         input_txt = torch.LongTensor(samples)
         input_txt = input_txt.to(device)
         slen = torch.LongTensor([slen]).to(device)
         plen = torch.LongTensor([plen]).to(device)
         #input_txt = torch.Tensor(input_txt)
-        print(input_txt,slen,plen)
+        #print(input_txt,slen,plen)
         _, init_state = model((input_txt,slen,plen))
         result = samples
         #print('result',result)
@@ -312,7 +312,7 @@ def generate_poem(begin,slen,plen,model,device):
     #print('  ')
     #print('Generate encode is: {}'.format(result))
     text = TEXT.reverse(result.data)
-    print('Generate text is: {}'.format(text))
+    #print('Generate text is: {}'.format(text))
 
     return text
 
@@ -320,8 +320,6 @@ def generate_poetry(runtime,experiment,ret):
     model = experiment['custom_models'][0]
     device = experiment['device']
 
-    #begin = 'ÃÂÃÂ¬ÃÂÃÂ ÃÂÃÂ«ÃÂµÃÂÃÂÃÂª'
-    #begin = "Â´Â²ÃÂ°ÃÃ·ÃÃÂ¹Ã¢"
     begins = [("床前明月光",5,2),("离离原上草",5,2),("天若有情天亦老",7,2)]
     model = model.eval()
     poem_list=[]
@@ -344,9 +342,9 @@ def store_model_dynamic_params():
     return {"vocab_size":vocab_size}
 
 def gen_poem_by_input(runtime,experiment,args):
-    print(args)
-    print(runtime)
-    print(experiment)
+    #print(args)
+    #print(runtime)
+    #print(experiment)
     model = experiment['custom_models'][0]
     device = experiment['device']
     begin=args
@@ -354,7 +352,7 @@ def gen_poem_by_input(runtime,experiment,args):
     plen=2
     model = model.eval()
     text = generate_poem(begin,slen,plen,model,device)
-    print(text)
+    print(text[0])
 
 def post_save_models(path):
     print("Save vocab")
@@ -407,6 +405,6 @@ Experiment={
     "checkpoint_n_epoch":10,
     "train_validate_each_n_epoch":1,
     "train_validate_final_with_best":True,
-    "interact_cmd":[("gen",gen_poem_by_input)]
+    "interact_cmd":[("gen",gen_poem_by_input,"gen <the begin words for generating>")]
 }
 

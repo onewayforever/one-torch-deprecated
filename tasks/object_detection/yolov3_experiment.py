@@ -376,7 +376,7 @@ Experiment={
     #'train_dataset_path':'/dev/shm/yolo_2014/train2014.txt',
     #'val_dataset_path':'/dev/shm/yolo_2014/val2014.txt',
     #'infer_dataset_path':'/dev/shm/yolo_2014/samples',
-    "src":['yolov3.cfg','models.py','utils'],
+    "codes_to_backup":['yolov3.cfg','models.py','utils'],
     "init_fn":(otu.create_dirs_at_home,{'dirs':['images','infers']}),
     "exit_fn":[(otu.convert_images_to_video,{'images_dir':'images','video_file':'evoluton.mp4'}),
                (otu.highlight_latest_result_file,{'input_dir':'images','filename':'final.jpg','ext':'.jpg'})],
