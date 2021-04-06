@@ -23,6 +23,7 @@ from torch.utils.tensorboard import SummaryWriter
 from types import MethodType
 import readline
 import io
+import yaml
 #sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gb18030') 
 
 torch.set_printoptions(linewidth=128)
@@ -110,7 +111,6 @@ def sigint_handler(signum, frame):
 
 
 signal.signal(signal.SIGINT, sigint_handler)
-
 
 def run_experiment_callback(fn_name,*params):
     #print(fn_name)
@@ -1186,11 +1186,17 @@ def create_experiment(args):
             print('Need dataset to train')
             exit(0)
         dataset_name=os.path.split(Experiment.get('train_dataset_path'))[1].split('.')[0]
+        experiment_id='{}_{}'.format(module_name,dataset_name)
+        if args.hparam:
+            param_name = os.path.split(args.hparam)[1].split('.')[0]
+            experiment_id=experiment_id+'_{}'.format(param_name)
+        experiment_id = experiment_id + '#{}'.format(now)
+        
 
         #print(Experiment.get('train_dataset_path'))
         #print('dataset_name',dataset_name)
 
-        experiment_id='{}_{}#{}'.format(module_name,dataset_name,now)
+        #experiment_id='{}_{}#{}'.format(module_name,dataset_name,now)
         experiment_home_dir='experiment_home/{}'.format(experiment_id)
         #print(experiment_home_dir)
         os.makedirs(experiment_home_dir,exist_ok=True)
@@ -1229,10 +1235,12 @@ def create_experiment(args):
 
 
 
+
 def update_hparams_by_conf(action,filename):
     global Runtime
     global Experiment
-    import yaml
+    if filename is None:
+        return
     with open(filename) as f:
         content = yaml.load(f)
         print(content)
@@ -1400,6 +1408,7 @@ if __name__=="__main__":
         assert args.src is not None
         just_a_try = True
         #print('step 1')
+        otu.load_vars_by_conf(args.hparam)
         create_experiment(args)
         #if args.hparam:
         #    update_hparams_by_conf('train',args.hparam)
@@ -1411,27 +1420,27 @@ if __name__=="__main__":
         exit(0)
     elif args.action=='val':
         assert args.experiment_path is not None
+        otu.load_vars_by_conf(args.hparam)
         load_experiment(args.experiment_path,args.src)
-        if args.hparam:
-            update_hparams_by_conf('val',args.hparam)
+        update_hparams_by_conf('val',args.hparam)
         update_config_by_args(args)
         logger = otu.logger_init()
         validate_wrapper()
         exit(0)
     elif args.action=='infer':
         assert args.experiment_path is not None
+        otu.load_vars_by_conf(args.hparam)
         load_experiment(args.experiment_path,args.src)
-        if args.hparam:
-            update_hparams_by_conf('infer',args.hparam)
+        update_hparams_by_conf('infer',args.hparam)
         update_config_by_args(args)
         logger = otu.logger_init()
         inference_wrapper()
         exit(0)
     elif args.action=='interact':
         assert args.experiment_path is not None
+        otu.load_vars_by_conf(args.hparam)
         load_experiment(args.experiment_path,args.src)
-        if args.hparam:
-            update_hparams_by_conf('infer',args.hparam)
+        update_hparams_by_conf('infer',args.hparam)
         update_config_by_args(args)
         logger = otu.logger_init()
         interact_wrapper()
@@ -1440,6 +1449,9 @@ if __name__=="__main__":
     assert args.action =='train'
     assert args.src is not None
     just_a_try = not args.create
+
+    
+    otu.load_vars_by_conf(args.hparam)
 
     create_experiment(args)
     

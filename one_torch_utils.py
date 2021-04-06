@@ -9,16 +9,50 @@ import matplotlib.pyplot as plt
 import random
 import csv
 import cmd
+import yaml
 
 Runtime=None
 Experiment=None
 logger=None
+custom_vars=None
 
 def init(runtime,experiment):
     global Experiment
     global Runtime 
     Runtime = runtime
     Experiment = experiment
+
+def load_vars_by_conf(filename):
+    global custom_vars
+    if filename is None:
+        return
+    with open(filename) as f:
+        content = yaml.load(f)
+        print(content)
+        custom_vars = content.get('vars')
+        print(custom_vars)
+
+def update_vars_by_conf(myglobals):
+    #all_vars = globals()
+    #print('all locals()')
+    #print(locals())
+    #print('all globals')
+    #print(all_vars)
+    if myglobals is None:
+        myglobals = globals()
+    if custom_vars is not None:
+        for k in custom_vars:
+            print('set',k,custom_vars[k])
+            #print(k,globals().get(k))
+            #globals()[k]=custom_vars[k]
+            myglobals[k]=custom_vars[k]
+            #print(k,globals().get(k))
+            #print('{} = {}'.format(k,custom_vars[k]))
+            #if isinstance(custom_vars[k],str):
+            #    exec('{} = "{}"'.format(k,custom_vars[k]))
+            #else:
+            #    exec('{} = {}'.format(k,custom_vars[k]))
+            
 
 def epoch_insight_2class(result_list):
     threshold = 0.5

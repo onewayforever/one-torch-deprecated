@@ -22,14 +22,39 @@ import one_torch_models as otm
 import torchtext.vocab as Vocab
 import pickle
 
+
+
+scale=0.99
+delimiter=','
 W2V_TXT_FILE="word2vec.txt"
 
 max_input_length=32
+
+text_col_idx = 4
 
 print('max_input_length',max_input_length)
 
 vocab_size=0
 pad_idx=0
+
+HPARAMS = {
+    #"W2V_PATH":W2V_PATH,
+    'HIDDEN_DIM': 512,
+    'EMBED_DIM': 512,
+    'N_LAYERS': 2,
+    'BIDIRECTIONAL': False,
+    'DROPOUT':0.5,
+    #'PAD_IDX':TEXT.vocab.stoi[TEXT.pad_token]
+}
+
+#print('src locals()')
+#print(locals())
+#print('src locals()')
+#print(globals())
+#print('try update vars')
+begins = ["床前明月光","离离原上草","天若有情天亦老"]
+otu.update_vars_by_conf(globals())
+print('W2V_TXT_FILE',W2V_TXT_FILE)
 
 
 TEXT = data.ReversibleField(batch_first = True,
@@ -43,25 +68,13 @@ TEXT = data.ReversibleField(batch_first = True,
                   unk_token = '<unk>' 
                   )
 
-SLEN = data.Field(sequential=False,use_vocab=False,dtype = torch.long)
-PLEN = data.Field(sequential=False,use_vocab=False,dtype = torch.long)
 
-
-
-#scale=0.1
-#scale=0.5
-scale=0.99
-#scale=1
-#scale=0.01
 def load_data(path):
     dataset = data.TabularDataset(
         path = path, format = 'csv', skip_header = True,
-        fields=[('title',None),
-                ('author',None),
-                ('slen', SLEN),
-                ('plen', PLEN),
-                ('text', TEXT)
-            ])
+        csv_reader_params={'delimiter':delimiter},
+        fields=[(None, None)]*(text_col_idx-1) + [('text', TEXT)]
+        )
     total_len=len(dataset)
     fetch = dataset.split(scale)[0]
     size = len(fetch.examples)
@@ -90,41 +103,29 @@ def create_dataloader(dataset,batch_size):
 def data_preprocess_fn(runtime,experiment,original_data):
     
     text = original_data.text
-    slen = original_data.slen
-    plen = original_data.plen
     y = torch.cat([text[:,1:],(torch.ones(text.shape[0],1)*pad_idx).long()],dim=1)
     #print('y',y.shape)
     #print(y)
     #print(text)
-    return (text,slen,plen),y
+    return text,y
 
 def preview_data(data):
     print(data)   
     #print(data.title)
     #print(data.author)
-    print('sentence len:\t',data.slen)
-    print('paragraph len:\t',data.plen)
     print('text char:\t',data.text)
     print('text encode:\t',TEXT.numericalize(''.join(data.text)))
     #print('text decode:\t',str(bert_tokenizer.decode(data.text)))
 
 
 
-class PoetryModel(nn.Module):
+class CharRNNModel(nn.Module):
     def __init__(self,  hparams):
-        super(PoetryModel, self).__init__()
+        super(CharRNNModel, self).__init__()
         self.num_layers = hparams['N_LAYERS']
         self.hidden_dim = hparams['HIDDEN_DIM'] 
         bidirectional = hparams['BIDIRECTIONAL']
         dropout = hparams['DROPOUT']
-        require_dim=0
-        self.require_dim = require_dim
-        self.slen_embed = nn.Embedding(13, 2)
-        self.plen_embed = nn.Embedding(300, 2)
-
-        self.requirement_fc=nn.Linear(4,self.hidden_dim)
-        self.review_fc=nn.Linear(4,self.hidden_dim)
-
 
         #embedding_dim = hparams['EMBED_DIM']
         weights = torch.Tensor(TEXT.vocab.vectors)
@@ -135,50 +136,21 @@ class PoetryModel(nn.Module):
 
         self.bidirectional = bidirectional
         self.directions = 2 if bidirectional else 1
-        # ÃÂ¶ÃÂ¨ÃÂÃÂ¥2ÃÂ²ÃÂ£ÃÂµÃÂLSTMÃÂ£ÃÂ¬ÃÂ²ÃÂ¢ÃÂÃÂbatchÃÂÃÂ»ÃÂÃÂÃÂºÃÂ¯ÃÂÃÂ½ÃÂ²ÃÂÃÂÃÂ½ÃÂµÃÂÃÂµÃÂÃÂÃÂ»ÃÂÃÂ»
-        self.lstm = nn.LSTM(embedding_dim+require_dim*2, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
-        # ÃÂ¶ÃÂ¨ÃÂÃÂ¥ÃÂÃÂ«ÃÂÃÂ¬ÃÂ½ÃÂÃÂ²ÃÂ£,ÃÂºÃÂ³ÃÂ½ÃÂÃÂÃÂ»ÃÂ¸ÃÂ¶softmaxÃÂ½ÃÂ¸ÃÂÃÂÃÂ·ÃÂÃÂÃÂ 
+        self.lstm = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
         self.decode_dense1 = otm.dense_layer(self.directions*self.hidden_dim, self.directions*self.hidden_dim,norm="LayerNorm",activation='ReLU')
         self.decode_dense2 = otm.dense_layer(self.directions*self.hidden_dim, self.directions*self.hidden_dim,norm="LayerNorm",activation='ReLU')
         self.linear_out = nn.Linear(self.directions*self.hidden_dim, vocab_size)
 
     def forward(self, input, hidden=None):
-        text,slen,plen=input 
+        text=input 
         device = text.device
         batch_size,seq_len = text.shape
-        if self.require_dim>0:
-            slen=slen.unsqueeze(dim=1)
-            plen=plen.unsqueeze(dim=1)
-            slen_embedded = self.slen_embed(slen)
-            plen_embedded = self.plen_embed(plen)
-            info=torch.cat([slen_embedded,plen_embedded],dim=2).float()
-            #print('text',text.shape,slen_embedded.shape,plen_embedded.shape,info.shape)
-        #print(text)
-        #with torch.no_grad():
-        #    bert_output = self.bert(text)
-        #    embedded = bert_output[0]
-        #print('embedded',embedded.shape)
-            embedded = self.word_to_vec(text)
-            #print('embeded',embedded.shape,info.shape)
-            info = info.repeat(1,seq_len,1)
-        #print('cat',embedded.shape,info.shape)
-            embedded = torch.cat([embedded,info],dim=2)
-            #print('embeded',embedded.shape,info.shape)
-        else:
-            embedded = self.word_to_vec(text)
+        embedded = self.word_to_vec(text)
     
         # embeds_size:(seq_len,batch_size,embedding_dim)
         if hidden is None:
-            #slen=slen.unsqueeze(dim=1)
-            #plen=plen.unsqueeze(dim=1)
-            slen_embedded = self.slen_embed(slen)
-            plen_embedded = self.plen_embed(plen)
-            info=torch.cat([slen_embedded,plen_embedded],dim=1).float()
-            info = self.requirement_fc(info).unsqueeze(dim=0)
-            info = info.repeat(self.num_layers*self.directions,1,1)
             #print('info',info.shape)
-            #h0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(device)
-            h0 = info
+            h0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim).to(device)
             c0 = torch.zeros(self.num_layers*self.directions, batch_size, self.hidden_dim).to(device)
         else:
             h0, c0 = hidden
@@ -189,15 +161,6 @@ class PoetryModel(nn.Module):
         #print('fc output',output.shape)
         return output, hidden
 
-HPARAMS = {
-    #"W2V_PATH":W2V_PATH,
-    'HIDDEN_DIM': 512,
-    'EMBED_DIM': 512,
-    'N_LAYERS': 2,
-    'BIDIRECTIONAL': False,
-    'DROPOUT':0.5,
-    #'PAD_IDX':TEXT.vocab.stoi[TEXT.pad_token]
-}
 
 
 
@@ -268,10 +231,8 @@ def pick_top_n(preds, top_n=5):
     return c
 
 
-def generate_poem(begin,slen,plen,model,device):
+def generate_text(begin,model,device):
 
-    #begin = 'ÃÂÃÂ¬ÃÂÃÂ ÃÂÃÂ«ÃÂµÃÂÃÂÃÂª'
-    #begin = "Â´Â²ÃÂ°ÃÃ·ÃÃÂ¹Ã¢"
 
     text_len = 30 
     #samples = [convert.word_to_int(c) for c in begin]
@@ -281,11 +242,8 @@ def generate_poem(begin,slen,plen,model,device):
         #print('samples',samples)
         input_txt = torch.LongTensor(samples)
         input_txt = input_txt.to(device)
-        slen = torch.LongTensor([slen]).to(device)
-        plen = torch.LongTensor([plen]).to(device)
         #input_txt = torch.Tensor(input_txt)
-        #print(input_txt,slen,plen)
-        _, init_state = model((input_txt,slen,plen))
+        _, init_state = model(input_txt)
         result = samples
         #print('result',result)
         model_input = input_txt[:, -1][:, None]
@@ -293,7 +251,7 @@ def generate_poem(begin,slen,plen,model,device):
         #print(i)
         #print(model_input.shape)
         #print(model_input)
-            out, init_state = model((model_input,slen,plen), init_state)
+            out, init_state = model(model_input, init_state)
         #print('out',out.shape)
         #print(out)
             pred = torch.argmax(out,dim=2)
@@ -312,26 +270,24 @@ def generate_poem(begin,slen,plen,model,device):
     #print('  ')
     #print('Generate encode is: {}'.format(result))
     text = TEXT.reverse(result.data)
-    #print('Generate text is: {}'.format(text))
 
     return text
 
-def generate_poetry(runtime,experiment,ret):
+def generate_text_samples(runtime,experiment,ret):
     model = experiment['custom_models'][0]
     device = experiment['device']
 
-    begins = [("床前明月光",5,2),("离离原上草",5,2),("天若有情天亦老",7,2)]
     model = model.eval()
-    poem_list=[]
-    for begin,slen,plen in begins:
+    text_list=[]
+    for begin in begins:
         print('begin',begin)
-        text = generate_poem(begin,slen,plen,model,device)
-        poem_list.append(text)
+        text = generate_text(begin,model,device)
+        text_list.append(text)
 
-    return {'display':'\n'.join(map(lambda x:x[0],poem_list))}
+    return {'display':'\n'.join(map(lambda x:x[0],text_list))}
 
 def create_custom_models_fn(runtime,experiment):
-    return [PoetryModel(HPARAMS)]
+    return [CharRNNModel(HPARAMS)]
 
 def load_model_dynamic_params(data):
     global vocab_size
@@ -341,17 +297,15 @@ def store_model_dynamic_params():
     global vocab_size
     return {"vocab_size":vocab_size}
 
-def gen_poem_by_input(runtime,experiment,args):
+def gen_text_by_input(runtime,experiment,args):
     #print(args)
     #print(runtime)
     #print(experiment)
     model = experiment['custom_models'][0]
     device = experiment['device']
     begin=args
-    slen=5
-    plen=2
     model = model.eval()
-    text = generate_poem(begin,slen,plen,model,device)
+    text = generate_text(begin,model,device)
     print(text[0])
 
 def post_save_models(path):
@@ -399,12 +353,12 @@ Experiment={
     # Define function to deep insight result in each iteration, can be None
     #"post_epoch_val_fn":(otu.epoch_insight_classification,{'nclass':N_class}),
     #"post_batch_val_fn":otu.batch_result_extract,
-    "post_epoch_train_fn":generate_poetry,
+    "post_epoch_train_fn":generate_text_samples,
     #"post_batch_train_fn":otu.batch_result_extract,
     #"validate_batch_val_result_fn":validate_batch_val_result_fn,
     "checkpoint_n_epoch":10,
     "train_validate_each_n_epoch":1,
     "train_validate_final_with_best":True,
-    "interact_cmd":[("gen",gen_poem_by_input,"gen <the begin words for generating>")]
+    "interact_cmd":[("gen",gen_text_by_input,"gen <the begin words for generating>")]
 }
 
