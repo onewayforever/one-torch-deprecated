@@ -136,7 +136,9 @@ class CharRNNModel(nn.Module):
 
         self.bidirectional = bidirectional
         self.directions = 2 if bidirectional else 1
-        self.lstm = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
+        #self.lstm = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
+        self.encoder = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
+        self.decoder = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
         self.decode_dense1 = otm.dense_layer(self.directions*self.hidden_dim, self.directions*self.hidden_dim,norm="LayerNorm",activation='ReLU')
         self.decode_dense2 = otm.dense_layer(self.directions*self.hidden_dim, self.directions*self.hidden_dim,norm="LayerNorm",activation='ReLU')
         self.linear_out = nn.Linear(self.directions*self.hidden_dim, vocab_size)
@@ -154,11 +156,13 @@ class CharRNNModel(nn.Module):
             c0 = torch.zeros(self.num_layers*self.directions, batch_size, self.hidden_dim).to(device)
         else:
             h0, c0 = hidden
+        output, hidden = self.encoder(embedded, (h0, c0))
+        output, hidden = self.decoder(embedded, hidden)
         output, hidden = self.lstm(embedded, (h0, c0))
         # output_size:(seq_len*batch_size,vocab_size)
-        #print('lstm output',output.shape)
+        print('lstm output',output.shape)
         output = self.linear_out(self.decode_dense2(self.decode_dense1(output)))
-        #print('fc output',output.shape)
+        print('input shape',text.shape,'output shape',output.shape)
         return output, hidden
 
 

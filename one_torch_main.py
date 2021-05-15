@@ -50,6 +50,7 @@ Experiment=None
 experiment_home_dir=None
 Runtime={
     '__rank':-1,
+    'task':None,
     'total_train_size':0,
     'total_train_batches':0,
     'total_val_size':0,
@@ -93,6 +94,7 @@ EXPERIMENT_DEFAULT={
         'checkpoint_n_epoch':0,
         'log_interval':0,
         'experiment_path':None,
+        'multi_task_labels':None,
         'use_tensorboard':False,
         'validate_n_batch_in_train':1,     # only validate n batch while training 
         'train_validate_each_n_batch':0, # validate on every n batch 
@@ -106,11 +108,11 @@ best_epoch=-1
 
 def sigint_handler(signum, frame):
     global sig_int_flag
-    print('\ncatched interrupt signal!\n')
+    print('\ncatched CTRL-Z signal!\n')
     sig_int_flag=True
 
 
-signal.signal(signal.SIGINT, sigint_handler)
+signal.signal(signal.SIGTSTP, sigint_handler)
 
 def run_experiment_callback(fn_name,*params):
     #print(fn_name)
@@ -128,6 +130,12 @@ def run_experiment_callback(fn_name,*params):
     if not isinstance(fn_info_list,list):
         fn_info_list=[fn_info_list]
     for fn_info in fn_info_list:
+        if isinstance(fn_info,dict):
+            task = Runtime['task']
+            if fn_info.get(task):
+                fn_info = fn_info[task]
+            else:
+                continue
         if isinstance(fn_info,tuple):
             if len(fn_info)==1:
                 ret=fn(Runtime,Experiment,ret)
@@ -141,13 +149,11 @@ def run_experiment_callback(fn_name,*params):
     sys.stdout.flush()
     return ret
 
-
-
-def count_parameters(model):
-    return sum(p.numel() for p in model.parameters()), sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-def epoch_time(start_time, end_time):
-    elapsed_time = end_time - start_time
+def epoch_time(elapsed_time):
+#def epoch_time(start_time, end_time):
+#    elapsed_time = end_time - start_time
+    if isinstance(elapsed_time,dict):
+        elapsed_time=sum(elapsed_time.values())
     elapsed_mins = int(elapsed_time / 60)
     elapsed_secs = int(elapsed_time - (elapsed_mins * 60))
     return elapsed_mins, elapsed_secs
@@ -176,9 +182,25 @@ def to_device(tensors,device):
     return output
 
 def extract_loss_info(loss_info):
+    #print(loss_info)
     info=''
-    for k in loss_info:
-        info+='{}:{:.6f} '.format(k,loss_info[k])
+    if isinstance(loss_info,dict):
+        for k in loss_info:
+            #print(k,loss_info[k])
+            if isinstance(loss_info[k],dict):
+                for j in loss_info[k]:
+                    info+='{}:{:.6f} '.format(k,loss_info[k][j])
+            else:
+                info+='{}:{:.6f} '.format(k,loss_info[k])
+    elif isinstance(loss_info,list):
+        if all(map(lambda x:len(x)==1,loss_info)):
+            for task in loss_info:
+                info+='{}:{:.6f} '.format(k,loss_info[k])
+        else:
+            for task in loss_info:
+                info+='{}  '.format(task)
+                for k in loss_info[task]:
+                    info+='{}:{:.6f} '.format(k,loss_info[task][k])
     return info
 
 def default_infer_fn(runtime,experiment):
@@ -215,7 +237,11 @@ def default_val_fn(runtime,experiment):
     #logger.info(data)
     #print(data.type)
     #print(next(model.parameters()).device)
-    output = model(data)
+    task = runtime.get('task')
+    if task is None:
+        output = model(data)
+    else:
+        output = model(data,task)
     runtime['output'] = output
     #logger.info(output,target)
     #loss = F.nll_loss(output, target)
@@ -244,7 +270,11 @@ def default_train_fn(runtime,experiment):
     #logger.info(data)
     #print(data.type)
     #print(next(model.parameters()).device)
-    output = model(data)
+    task = runtime.get('task')
+    if task is None:
+        output = model(data)
+    else:
+        output = model(data,task)
     runtime['output'] = output
     #logger.info(output,target)
     #loss = F.nll_loss(output, target)
@@ -258,7 +288,7 @@ def default_train_fn(runtime,experiment):
     optimizer.step()
     return output,{'loss':loss_value}
 
-def default_data_preprocess_fn(runtime,experiment,original_data):
+def default_data_preprocess_fn(runtime,experiment,original_data,task=None):
     return original_data[0],original_data[1]
 
 def default_evaluation_fn(runtime,experiment):
@@ -317,15 +347,22 @@ def epoch_train(Runtime,Experiment):
     list(map(lambda x:x.train(),models))
     train_loss_info=defaultdict(lambda: 0) 
     loss_info={}
-    #epoch_insight_record_fn=Experiment.get('train_epoch_insight_record_fn')
-    #epoch_insight_fn=Experiment.get('train_epoch_insight_fn')
     Runtime['epoch_results']=[]
     run_experiment_callback('pre_epoch_train_fn')
     total_num=0
+    if Experiment['multi_task_labels'] is not None:
+        #print('create Multi task loader')
+        train_loader = otu.MTLoader(train_loader)
     for batch_idx, original_data in enumerate(tqdm.tqdm(train_loader, ncols=100,desc="Training Epoch {}".format(Runtime['epoch']))):
         if sig_int_flag:
             break
-        data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data)
+        if Experiment['multi_task_labels'] is None:
+            data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data)
+            task = None
+        else:
+            task_data,task = original_data
+            data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,task_data,task)
+        Runtime['task']=task
         #if batch_idx==0:
         #    print(target)
         [data, target] = to_device([data,target],device)
@@ -337,18 +374,11 @@ def epoch_train(Runtime,Experiment):
         Runtime['batches_done']+=1
         Runtime['output']=output
         Runtime['batch_train_loss_info']=loss_info
-        #output, loss_info = custom_train_fn(models,criterions,optimizers,data,target,device)
         assert isinstance(loss_info,dict) 
         for k in loss_info:
             if 'loss' in k:
                 train_loss_info[k]+=loss_info[k] 
         total_num+=1
-        #save batch results
-        #if epoch_insight_record_fn:
-        #    #result_list.append((output.clone().detach().cpu(),target.clone().detach().cpu()))
-        #    batch_info=epoch_insight_record_fn(Runtime,Experiment)
-        #    if batch_info is not None:
-        #        Runtime['epoch_results'].append(batch_info)
 
         batch_info=run_experiment_callback('post_batch_train_fn')
         if batch_info is not None:
@@ -358,24 +388,43 @@ def epoch_train(Runtime,Experiment):
             if Runtime['batches_done']%Experiment['train_validate_each_n_batch']==0:
                 validate(Runtime,Experiment)
 
-        #if batch_idx % HPARAMS['minibatch_insight_interval'] == 0:
-        #    run_experiment_callback('minibatch_insight_fn')
-        #if HPARAMS['log_interval']>0 and batch_idx % HPARAMS['log_interval'] == 0:
-        #    logger.info('Train Epoch: {} [{}/{} ({:.0f}%)]\t{}'.format(Runtime['epoch'], batch_idx * Runtime['train_batch_size'], Runtime['total_train_size'], 100. * batch_idx / len(train_loader), extract_loss_info(loss_info)))
-        #    logger.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(epoch, batch_idx * len(data), len(train_loader.dataset), 100. * batch_idx / len(train_loader), epoch_loss))
-    #print(output,target)
-    #print(output.shape,target.shape)
     epoch_insight_result = run_experiment_callback('post_epoch_train_fn')
 
-    #total_num=len(train_loader)
     for k in loss_info:
         train_loss_info[k]/=total_num
 
     return train_loss_info,epoch_insight_result
 
 def validate(Runtime,Experiment):
+    all_tasks = Experiment.get('multi_task_labels')
+    if all_tasks is None:
+        start_time = time.time()
+        loss_info,insight_result = validate_task(Runtime,Experiment,task=None)
+        end_time = time.time()
+        return end_time-start_time,loss_info,insight_result 
+    task_loss = {}
+    task_time = {}
+    task_insight_result = {}
+    for task in all_tasks:
+        start_time = time.time()
+        loss_info,insight_result = validate_task(Runtime,Experiment,task=task)
+        end_time = time.time()
+        task_loss[task] = loss_info
+        task_insight_result[task] = insight_result
+        task_time[task]=end_time-start_time
+    return task_time,task_loss,task_insight_result
+
+
+def validate_task(Runtime,Experiment,task=None):
     models = Experiment.get('custom_models')
     val_loader = Experiment.get('val_loader')
+    if task is None:
+        dataloader = val_loader
+    else:
+        dataloader = val_loader.get(task) 
+    if dataloader is None:
+        print('No validate loader for task {}'.format(task))
+        return 0,{},{}
     device = Experiment['device']
     list(map(lambda x:x.eval(),models))
     val_loss_info=defaultdict(lambda: 0) 
@@ -393,17 +442,21 @@ def validate(Runtime,Experiment):
     validate_n_batch_in_train = Experiment['validate_n_batch_in_train']
     total_num=0
     with torch.no_grad():
-        for batch_idx, original_data in enumerate(val_loader):
+        for batch_idx, original_data in enumerate(dataloader):
             #print(batch_idx)
             if Runtime['step']=='train' and sig_int_flag:
                 break
             if Runtime['step']=='train' and validate_n_batch_in_train > 0 and batch_idx >= validate_n_batch_in_train :
                 break
-            data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data)
+            if task is None:
+                data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data)
+            else:
+                data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data,task)
             [data, target] = to_device([data,target],device)
             Runtime['input']=data
             Runtime['target']=target
             Runtime['batch_idx']=batch_idx
+            Runtime['task']=task
             output, loss_info = Experiment['custom_val_fn'](Runtime,Experiment)
             assert isinstance(loss_info,dict) 
             Runtime['output']=output
@@ -482,6 +535,7 @@ def inference(Runtime,Experiment):
 def preview_dataset(dataset,loader):
     global Runtime 
     global Experiment
+
     def preview_batch(self,arg):
         if loader is not None:
             try:
@@ -500,6 +554,28 @@ def preview_dataset(dataset,loader):
             #print(batch)
             otu.preview_tensor(batch)
             Experiment['preview_batch_item'](batch)
+
+    def preview_mtl_batch(self,args):
+        try:
+            task,idx = args.split()
+            n = int(idx)
+        except Exception as e:
+            print('Format: <task_name>  <index>')
+            return
+        if task not in all_labels:
+            print('task should in {}'.format(all_labels))
+            return
+        if loader is not None:
+            iterator = iter(loader[task])
+            while True: 
+                batch=next(iterator)
+                n-=1
+                if n<=0:
+                    break
+            batch = Experiment['data_preprocess_fn'](Runtime,Experiment,batch,task)  
+            #print(batch)
+            otu.preview_tensor(batch)
+            Experiment['preview_batch_item'](batch)
     def preview_nth_data(self,arg):
         try:
             n = int(arg)
@@ -508,15 +584,44 @@ def preview_dataset(dataset,loader):
             print('please input an index number [0 - {}]'.format(max_index))
             return
         Experiment['preview_dataset_item'](dataset[n])
+    
+    def preview_mtl_nth_data(self,args):
+        try:
+            task,idx = args.split()
+            n = int(idx)
+        except Exception as e:
+            print('Format: <task_name>  <index>')
+            return
+        if task not in all_labels:
+            print('task should in {}'.format(all_labels))
+            return
+        if n<0 or n>max_indices[task]:
+            print('please input an index number [0 - {}]'.format(max_indices[task]))
+            return
+        Experiment['preview_dataset_item'](dataset[task][n],task)
 
     if loader is not None:
-        max_batch=len(loader)-1
-        otu.CLI.do_batch = preview_batch
-        otu.CLI.do_b = otu.CLI.do_batch 
+        all_labels = Experiment.get("multi_task_labels")
+        if all_labels:
+            otu.CLI.do_batch = preview_mtl_batch
+            otu.CLI.do_b = otu.CLI.do_batch 
+        else:
+            max_batch=len(loader)-1
+            otu.CLI.do_batch = preview_batch
+            otu.CLI.do_b = otu.CLI.do_batch 
     if dataset is not None:
-        max_index=len(dataset)-1
-        otu.CLI.do_data = preview_nth_data
-        otu.CLI.do_d = otu.CLI.do_data
+        all_labels = Experiment.get("multi_task_labels")
+        if all_labels:
+            assert isinstance(dataset,dict)
+            max_indices={}
+            for task in all_labels:
+                max_indices[task]=len(dataset[task])-1
+            otu.CLI.do_data = preview_mtl_nth_data
+            otu.CLI.do_d = otu.CLI.do_data
+        else:
+            max_index=len(dataset)-1
+            otu.CLI.do_data = preview_nth_data
+            otu.CLI.do_d = otu.CLI.do_data
     cli=otu.CLI('preview > ')
     cli.cmdloop(intro=" ==== Preview Dataset ==== ")
 
@@ -624,13 +729,28 @@ def init_experiment(action):
         #    infer_loader=Experiment['create_infer_loader_fn'](infer_path)
 
     if train_dataset:
-        Runtime['total_train_size']=len(train_dataset)
+        if isinstance(train_dataset,dict):
+            Runtime['total_train_size']={}
+            for k in train_dataset:
+                Runtime['total_train_size'][k]=len(train_dataset[k])
+        else:
+            Runtime['total_train_size']=len(train_dataset)
         logger.info('Train samples:{}'.format(Runtime['total_train_size']))
     if val_dataset:
-        Runtime['total_val_size']=len(val_dataset)
+        if isinstance(val_dataset,dict):
+            Runtime['total_val_size']={}
+            for k in val_dataset:
+                Runtime['total_val_size'][k]=len(val_dataset[k])
+        else:
+            Runtime['total_val_size']=len(val_dataset)
         logger.info('Val samples:{}'.format(Runtime['total_val_size']))
     if infer_dataset:
-        Runtime['total_infer_size']=len(infer_dataset)
+        if isinstance(infer_dataset,dict):
+            Runtime['total_infer_size']={}
+            for k in infer_dataset:
+                Runtime['total_infer_size'][k]=len(infer_dataset[k])
+        else:
+            Runtime['total_infer_size']=len(infer_dataset)
         logger.info('Infer samples:{}'.format(Runtime['total_infer_size']))
 
 
@@ -708,11 +828,14 @@ def init_experiment(action):
         else:
             print('ERROR: No Dataset loaded, Please check!')
         return
-    
+   
+    print("done load data") 
 
     if custom_models is None and Experiment.get('create_custom_models_fn') is not None:
         custom_models = Experiment.get('create_custom_models_fn')(Runtime,Experiment)
         Experiment['custom_models'] = custom_models
+    
+    print("done create model") 
 
     if custom_models is None:
         print('Error: Need define torch models, by custom_models objects  or by create_custom_models_fn')
@@ -727,18 +850,35 @@ def init_experiment(action):
     if ddp_flag:
         to_ddp(custom_models)
     logger.info("### custom models info ###")
+    total_parameters=0
+    total_parameters_size=0
+    trainable_parameters=0
+    trainable_parameters_size=0
     for model in custom_models:
-        total_parameters, trainable_parameters = count_parameters(model)
+        paramter_info= otu.insight_parameters(model)
+        print(paramter_info)
         logger.info("### model info ###")
         logger.info(repr(model))
         logger.info(model._get_name())
-        logger.info(f"### Total Parameters:{total_parameters}\tTrainable Parameters:{trainable_parameters} ###")
+        logger.info("### Model {} Parameters:{} size:{}MB\tTrainable Parameters:{} size:{}MB###".format(model._get_name(),
+                               paramter_info['total_parameters'],
+                               int(paramter_info['total_parameters_size']/1024/1024),
+                               paramter_info['trainable_parameters'],
+                               int(paramter_info['trainable_parameters_size']/1024/1024)))
+        total_parameters+=paramter_info['total_parameters']
+        total_parameters_size+=paramter_info['total_parameters_size']
+        trainable_parameters+=paramter_info['trainable_parameters']
+        trainable_parameters_size+=paramter_info['trainable_parameters_size']
         try:
             if tb_writer:
                 tb_writer.add_graph(model)
         except Exception as e:
             #fails all the time, don't know why
             pass
+    logger.info("### Total Parameters:{} size:{}MB\tTrainable Parameters:{} size:{}MB###".format(total_parameters,
+                         int(total_parameters_size/1024/1024),
+                         trainable_parameters,
+                         int(trainable_parameters_size/1024/1024)))
     logger.info("### loss criterion info ###")
     for loss_criterion in loss_criterions:
         logger.info(repr(loss_criterion))
@@ -755,6 +895,15 @@ def init_experiment(action):
     Runtime['train_batch_size']=HPARAMS['train_batch_size']
     Runtime['val_batch_size']=HPARAMS['val_batch_size']
     Runtime['infer_batch_size']=HPARAMS['infer_batch_size']
+
+def log_action_info(work_time,loss_info,insight_info,mode='val',prefix='\t'):
+    if isinstance(work_time,dict):
+        tasks = work_time.keys()
+        for task in tasks:
+            logger.info('Epoch {} Val Detail:\n'.format(epoch)+str(insight_info[task].get('display')))
+    else:
+        logger.info('Epoch {} Val Detail:\n'.format(epoch)+str(insight_info.get('display')))
+        
 
 def train_wrapper():
     global Runtime
@@ -835,7 +984,7 @@ def train_wrapper():
             if epoch_loss:
                 check_loss = epoch_loss 
         end_time = time.time()
-        epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+        epoch_mins, epoch_secs = epoch_time(end_time - start_time)
         for scheduler in custom_schedulers:
             if lr_scheduler_info == 'ReduceLROnPlateau' and train_loss_info.get('loss'):
                 scheduler.step(train_loss_info.get('loss'))
@@ -850,9 +999,12 @@ def train_wrapper():
             if epoch%Experiment.get('train_validate_each_n_epoch')==0:
                 Runtime['trace']='epoch_val'
                 #print('run validate per epoch')
-                val_loss_info,val_insight = validate(Runtime,Experiment)
+                val_time,val_loss_info,val_insight = validate(Runtime,Experiment)
                 #val_loss_info,val_insight = validate(args, custom_models, loss_criterions,device, val_loader,n_batch=HPARAMS['epoch_val_n_batch'],from_epoch=epoch)
-                epoch_loss = val_loss_info.get('loss')
+                if isinstance(val_time,dict):
+                    epoch_loss = sum(map(lambda x:x[1].get('loss'),val_loss_info.items()))
+                else:
+                    epoch_loss = val_loss_info.get('loss')
                 if HPARAMS['early_stop'] > 0:
                     if epoch_loss:
                         check_loss = epoch_loss
@@ -879,6 +1031,12 @@ def train_wrapper():
             logger.info('Epoch {} Train Detail:\n'.format(epoch)+str(train_insight.get('display')))
         if val_insight.get('display'):
             logger.info('Epoch {} Val Detail:\n'.format(epoch)+str(val_insight.get('display')))
+        elif Experiment.get('multi_task_labels'):
+            logger.info('Epoch {} Val Detail:\n'.format(epoch))
+            for task in Experiment['multi_task_labels']:
+                if val_insight.get(task):
+                    if val_insight[task].get('display'):
+                        logger.info('{}\t'.format(task)+val_insight[task]['display'])
             #epoch_log+=(sep+'Val { '+str(val_insight)+' } ')
         
         #logger.info(epoch_log)
@@ -916,36 +1074,46 @@ def show_results():
 
 def validate_wrapper():
     global Runtime
+    global Experiment
 
     init_experiment('val')
     start_time = time.time()
     Runtime['runtime_id'] = 'validate_{}'.format(now) 
     Runtime['step']='validate'
     run_experiment_callback('pre_val_fn')
-    val_loss_info,val_insight = validate(Runtime,Experiment)
+    task_time,val_loss_info,val_insight = validate(Runtime,Experiment)
     end_time = time.time()
-    epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+    epoch_mins, epoch_secs = epoch_time(task_time)
     loss_str=extract_loss_info(val_loss_info)
     val_log=f'Validate Elapse: {epoch_mins}m {epoch_secs}s |\tLoss: {loss_str} '
     logger.info(val_log)
     if val_insight.get('display'):
         logger.info(val_insight.get('display'))
+    elif Experiment.get('multi_task_labels'):
+        for task in Experiment['multi_task_labels']:
+            if val_insight.get(task):
+                if val_insight[task].get('display'):
+                    logger.info('{}'.format(task)+val_insight[task]['display'])
     run_experiment_callback('post_val_fn')
     show_results()
 
 def final_validate():
     global Runtime
-    start_time = time.time()
+    global Experiment
     Runtime['step']='validate'
     logger.info('Start Final Validate')
-    val_loss_info,val_insight = validate(Runtime,Experiment)
-    end_time = time.time()
-    epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+    task_time,val_loss_info,val_insight = validate(Runtime,Experiment)
     loss_str=extract_loss_info(val_loss_info)
+    epoch_mins, epoch_secs = epoch_time(task_time)
     val_log=f'Validate Elapse: {epoch_mins}m {epoch_secs}s |\tLoss: {loss_str} '
     logger.info(val_log)
     if val_insight.get('display'):
         logger.info(val_insight.get('display'))
+    elif Experiment.get('multi_task_labels'):
+        for task in Experiment['multi_task_labels']:
+            if val_insight.get(task):
+                if val_insight[task].get('display'):
+                    logger.info('{}'.format(task)+val_insight[task]['display'])
     show_results()
 
 def inference_wrapper():
@@ -958,7 +1126,7 @@ def inference_wrapper():
     run_experiment_callback('pre_infer_fn')
     inference(Runtime,Experiment)
     end_time = time.time()
-    epoch_mins, epoch_secs = epoch_time(start_time, end_time)
+    epoch_mins, epoch_secs = epoch_time(end_time - start_time)
     infer_log=f'Inference Elapse: {epoch_mins}m {epoch_secs}s'
     logger.info(infer_log)
     run_experiment_callback('post_infer_fn')

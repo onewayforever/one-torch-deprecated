@@ -52,7 +52,61 @@ def update_vars_by_conf(myglobals):
             #    exec('{} = "{}"'.format(k,custom_vars[k]))
             #else:
             #    exec('{} = {}'.format(k,custom_vars[k]))
-            
+
+class MTLoader(object):
+    def __init__(self,dataloaders):
+        assert isinstance(dataloaders,dict)
+        self.dataloaders = dataloaders
+        self.all_len = {}
+        self.count = 0
+        self.total_batches = 0
+        self.iterators = {}
+        for k in dataloaders:
+            self.all_len[k]=len(dataloaders[k])
+            self.total_batches += self.all_len[k]
+            self.iterators[k]=iter(dataloaders[k])
+        self.next_loaders = list(dataloaders.keys())
+    def __iter__(self):
+        return self
+    def __len__(self):
+        return self.total_batches 
+    def __next__(self):
+        while True:
+            if len(self.next_loaders)==0:
+                raise StopIteration
+            task = random.choice(self.next_loaders)
+            try:
+                data = next(self.iterators[task])
+                self.all_len[task]-=1
+                if self.all_len[task]<=0:
+                    self.next_loaders.remove(task)
+            except Exception as e:
+                print('MTLoader:',task,e)
+                #print('loaders:',self.next_loaders)
+                #print(self.all_len)
+                continue
+            return data,task
+
+def insight_parameters(model):
+    total_parameters = 0
+    trainable_parameters = 0
+    total_parameters_size = 0
+    trainable_parameters_size = 0
+    for p in model.parameters():
+        n = p.numel()
+        t = p.dtype
+        s = p.element_size()
+        #print(t)
+        if p.requires_grad:
+            trainable_parameters+=n
+            trainable_parameters_size+=n*s
+        total_parameters+=n
+        total_parameters_size+=n*s
+    return {'total_parameters':total_parameters,
+            'total_parameters_size':total_parameters_size,
+            'trainable_parameters':trainable_parameters,
+            'trainable_parameters_size':trainable_parameters_size
+           }
 
 def epoch_insight_2class(result_list):
     threshold = 0.5
@@ -98,6 +152,7 @@ def make_confusion_matrix(pred,target,nclass):
     return confusion_matrix,statistics
 
 def epoch_insight_Nclass(N_class,result_list):
+    #print('insight',result_list)
     if len(result_list)==0:
         return None
     pred_list=list(map(lambda x:x['output'],result_list))
@@ -131,12 +186,14 @@ def epoch_insight_classification(runtime,experiment,ret,nclass=1):
     assert nclass > 1
     if runtime.get('epoch_results') is None:
         return ret 
+    #print(nclass,runtime.get('epoch_results'))
     matrix,statistics = epoch_insight_Nclass(nclass,runtime.get('epoch_results'))
     TP = np.diag(matrix)
     acc = TP.sum()/matrix.sum()
     def view_statistics(info):
         return 'ACC:{:.3f},TP:{},TN:{},FN:{},FP:{},Precise:{:.3f},Recall:{:.3f} sum:{}\n{}'.format(acc,info['TP'],info['TN'],info['FN'],info['FP'],info['Precise'],info['Recall'],matrix.sum(),matrix.astype(int))
     ret['display']=view_statistics(statistics[nclass-1]) 
+    #print(ret)
     return ret
 
 def batch_result_extract(runtime,experiment,ret):
