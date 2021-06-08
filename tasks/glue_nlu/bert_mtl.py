@@ -10,7 +10,6 @@ import os
 from torchtext import data
 import pandas as pd
 import re
-from torchtext import vocab
 import time
 import random
 import os
@@ -20,21 +19,29 @@ import one_torch_utils as otu
 import one_torch_models as otm
 import sklearn.metrics
 
-import torchtext.vocab as Vocab
 import pickle
 import csv
 
+from transformers import BertTokenizer, AutoModel
 
 
-W2V_TXT_FILE="/dev/shm/glove.840B.300d.txt"
+BERT_PRETRAINED = "/dev/shm/bert-base-uncased"
 
-max_input_length=32
+bert=None
+
+#W2V_TXT_FILE="/dev/shm/glove.840B.300d.txt"
+tokenizer=BertTokenizer.from_pretrained(BERT_PRETRAINED,use_fast=True)
+
+print('done tokenizer')
+
+max_input_length=512
 
 text_col_idx = 4
 
 print('max_input_length',max_input_length)
 
-vocab_size=0
+token2sen='[2SEN]'
+
 pad_idx=0
 
 HPARAMS = {
@@ -53,38 +60,53 @@ HPARAMS = {
 #print(globals())
 #print('try update vars')
 scale=1
-glue_tasks=['CoLA']
-#glue_tasks=['QQP','QNLI','MNLI','CoLA','SST-2','WNLI']
+#glue_tasks=['CoLA']
+glue_tasks=['CoLA','SST-2']
+#glue_tasks=['CoLA','STS-B']
+#glue_tasks=['QQP','QNLI','CoLA','SST-2','WNLI']
 #glue_tasks=['RTE','QQP','QNLI','MNLI','CoLA','SST-2','WNLI']
 #glue_tasks=['RTE','QQP','QNLI','MRPC','MNLI','CoLA','SST-2','WNLI']
 #glue_tasks=['CoLA', 'SST-2','MNLI','MRPC','QNLI','QQP','RTE']
-#glue_tasks=['CoLA','MNLI', 'MRPC', 'QNLI', 'QQP', 'RTE', 'SST-2', 'STS-B', 'WNLI']
+#glue_tasks=['QNLI']#, 'RTE', 'SST-2', 'STS-B', 'WNLI']
+#glue_tasks=['WNLI']
+#glue_tasks=['CoLA', 'MRPC', 'QNLI', 'RTE', 'SST-2', 'STS-B', 'WNLI']
+##glue_tasks=['CoLA','MNLI', 'MRPC', 'QNLI', 'QQP', 'RTE', 'SST-2', 'STS-B', 'WNLI']
 otu.update_vars_by_conf(globals())
-print('W2V_TXT_FILE',W2V_TXT_FILE)
+#print('W2V_TXT_FILE',W2V_TXT_FILE)
 w2v_vector = None
 
 
+tokenizer.add_special_tokens({'additional_special_tokens':[token2sen]})
+
+cls_token_idx = tokenizer.cls_token_id
+sep_token_idx = tokenizer.sep_token_id
+eos_token_idx = tokenizer.eos_token_id
+pad_token_idx = tokenizer.pad_token_id
+unk_token_idx = tokenizer.unk_token_id
 
 TEXT = data.Field(batch_first = True,
                   sequential=True,
-                  use_vocab = True,
+                  use_vocab = False,
                   #tokenize=lambda x: x.split(),
-                  tokenize='spacy',  tokenizer_language='en_core_web_sm',
+                  #tokenize = tokenizer.encode,
+                  tokenize = lambda x:tokenizer.encode(x,add_special_tokens=False),
+                  #tokenize='spacy',  tokenizer_language='en_core_web_sm',
                   #tokenize = tokenize_and_encode,
-                  init_token = '<sos>',
-                  eos_token = '<eos>',
-                  pad_token = '<pad>',
-                  unk_token = '<unk>' 
+                  pad_token = pad_token_idx,
                   )
-vectors=Vocab.Vectors(name=W2V_TXT_FILE)
-w2v_vector = vectors
-print(type(vectors.itos),len(vectors.itos),vectors.itos[:100])
-TEXT.vocab=Vocab.build_vocab_from_iterator([vectors.itos])
-TEXT.vocab.load_vectors(vectors)
-print('itos',len(TEXT.vocab.itos))
-print('itos',TEXT.vocab.itos[4000:4200])
-for t in ['the','The',',','.','?']:
-    print(t,'->',TEXT.vocab.stoi[t])
+
+def bert_numericalize(data):
+    print(data)
+    return ''
+
+#TEXT.numericalize = bert_numericalize
+#vectors=Vocab.Vectors(name=W2V_TXT_FILE)
+#w2v_vector = vectors
+#print(type(vectors.itos),len(vectors.itos),vectors.itos[:100])
+#print('itos',len(TEXT.vocab.itos))
+#print('itos',TEXT.vocab.itos[4000:4200])
+#for t in ['the','The',',','.','?']:
+#    print(t,'->',TEXT.vocab.stoi[t])
 
 def triple_fn(x):
     #print(x)
@@ -199,7 +221,8 @@ def load_data(path,task,mode):
     else:
         print('Undefined task',task)
         return None,0
-   
+
+    print('done load ',task)
 
     total_len=len(dataset.examples)
     #print(dataset.examples[0])
@@ -246,14 +269,17 @@ def create_dataloader(dataset,batch_size):
     if isinstance(dataset,dict):
         all_loaders={}
         for task in dataset:
-            all_loaders[task] = data.BucketIterator(dataset[task], batch_size = batch_size)
+            all_loaders[task] = data.BucketIterator(dataset[task], batch_size = batch_size,sort_key=lambda x: len(x.sentence1),sort=False)
+            #all_loaders[task] = data.BucketIterator(dataset[task], batch_size = batch_size,sort_key=lambda x: len(x.sentence1),sort=True)
         return all_loaders
     else:
-        train_iterator = data.BucketIterator(dataset, batch_size = batch_size,sort_key=lambda x: len(x.text),sort=True)
+        train_iterator = data.BucketIterator(dataset, batch_size = batch_size,sort_key=lambda x: len(x.sentence1),sort=False)
+        #train_iterator = data.BucketIterator(dataset, batch_size = batch_size,sort_key=lambda x: len(x.sentence1),sort=True)
         return train_iterator
 
 def data_preprocess_fn(runtime,experiment,original_data,task=None):
     #print('task',task) 
+    batch_size = original_data.sentence1.shape[0]
     if task in ["CoLA","SST-2"]: 
         x = original_data.sentence1
     else:
@@ -261,8 +287,10 @@ def data_preprocess_fn(runtime,experiment,original_data,task=None):
         #print(original_data.sentence1.shape,original_data.sentence2.shape)
         #x = (original_data.sentence1,original_data.sentence2)
         #print(original_data.sentence1,original_data.sentence2)
-        sep = torch.ones(original_data.sentence1.shape[0],1).long()
+        sep = (torch.ones(batch_size,1)*sep_token_idx).long()
         x = torch.cat([original_data.sentence1,sep,original_data.sentence2],dim=1)
+    cls = (torch.ones(batch_size,1)*cls_token_idx).long()
+    x = torch.cat([cls,x],dim=1)
     y = original_data.label
     #y = torch.cat([text[:,1:],(torch.ones(text.shape[0],1)*pad_idx).long()],dim=1)
     #print('y',y.shape)
@@ -276,108 +304,101 @@ def preview_data(data,task):
     #print(data.title)
     #print(data.author)
     if task=='CoLA':
-        print('text words:\t',data.sentence1,'label',data.label)
-        print('text encode:\t',TEXT.numericalize([data.sentence1]))
+        print(data.sentence1)
+        print('text words:\t',tokenizer.decode(data.sentence1),'label',data.label)
+        print('text encode:\t',data.sentence1)
     elif task=='MNLI':
-        print('sen1 :\t',data.sentence1,TEXT.numericalize([data.sentence1]))
-        print('sen2 :\t',data.sentence2,TEXT.numericalize([data.sentence2]))
+        print('sen1 :\t',tokenizer.decode(data.sentence1),data.sentence1)
+        print('sen2 :\t',tokenizer.decode(data.sentence2),data.sentence2)
         print('label:\t',data.label) 
     elif task=='MRPC':
-        print('sen1 :\t',data.sentence1,TEXT.numericalize([data.sentence1]))
-        print('sen2 :\t',data.sentence2,TEXT.numericalize([data.sentence2]))
+        print('sen1 :\t',tokenizer.decode(data.sentence1),data.sentence1)
+        print('sen2 :\t',tokenizer.decode(data.sentence2),data.sentence2)
         print('label:\t',data.label) 
     elif task=='QNLI':
-        print('question:\t',data.sentence1,TEXT.numericalize([data.sentence1]))
-        print('sen :\t',data.sentence2,TEXT.numericalize([data.sentence2]))
+        print('question:\t',tokenizer.decode(data.sentence1),data.sentence1)
+        print('sen :\t',tokenizer.decode(data.sentence2),data.sentence2)
         print('label:\t',data.label) 
     elif task=='QQP':
-        print('question1:\t',data.sentence1,TEXT.numericalize([data.sentence1]))
-        print('question2:\t',data.sentence2,TEXT.numericalize([data.sentence2]))
+        print('question1:\t',tokenizer.decode(data.sentence1),data.sentence1)
+        print('question2:\t',tokenizer.decode(data.sentence2),data.sentence2)
         print('label:\t',data.label) 
     elif task=='RTE':
-        print('sen1 :\t',data.sentence1,TEXT.numericalize([data.sentence1]))
-        print('sen2 :\t',data.sentence2,TEXT.numericalize([data.sentence2]))
+        print('sen1 :\t',tokenizer.decode(data.sentence1),data.sentence1)
+        print('sen2 :\t',tokenizer.decode(data.sentence2),data.sentence2)
         print('label:\t',data.label) 
     elif task=='SST-2':
-        print('sen1 :\t',data.sentence1,TEXT.numericalize([data.sentence1]))
+        print('sen1 :\t',tokenizer.decode(data.sentence1),data.sentence1)
         print('label:\t',data.label) 
     elif task=='STS-B':
-        print('sen1 :\t',data.sentence1,TEXT.numericalize([data.sentence1]))
-        print('sen2 :\t',data.sentence2,TEXT.numericalize([data.sentence2]))
+        print('sen1 :\t',tokenizer.decode(data.sentence1),data.sentence1)
+        print('sen2 :\t',tokenizer.decode(data.sentence2),data.sentence2)
         print('score:',data.label)
     elif task=='WNLI':
-        print('sen1 :\t',data.sentence1,TEXT.numericalize([data.sentence1]))
-        print('sen2 :\t',data.sentence2,TEXT.numericalize([data.sentence2]))
+        print('sen1 :\t',tokenizer.decode(data.sentence1),data.sentence1)
+        print('sen2 :\t',tokenizer.decode(data.sentence2),data.sentence2)
         print('label:',data.label)
     #print('text decode:\t',str(bert_tokenizer.decode(data.text)))
 
 
 
-class RNNModel(nn.Module):
-    def __init__(self,  hparams):
-        super(RNNModel, self).__init__()
+class BertModel(nn.Module):
+    def __init__(self,  bert,hparams):
+        super(BertModel, self).__init__()
         self.num_layers = hparams['N_LAYERS']
         self.hidden_dim = hparams['HIDDEN_DIM'] 
         bidirectional = hparams['BIDIRECTIONAL']
         dropout = hparams['DROPOUT']
 
-        #embedding_dim = hparams['EMBED_DIM']
-        print('load w2v')
-        print(w2v_vector.vectors)
-        weights = w2v_vector.vectors
-        print('w2v',weights.shape)
-        self.word_to_vec = nn.Embedding.from_pretrained(weights)
-        embedding_dim = weights.shape[1]
-        #self.word_to_vec = nn.Embedding(vocab_size, embedding_dim)
-        self.dropout = nn.Dropout(dropout,inplace=True)
+        #for param in bert.parameters():
+        #    param.requires_grad = False
+        
+        self.bert = bert
+
+        embedding_dim = bert.config.to_dict()['hidden_size']
+        self.bert_max_position_embeddings = bert.config.to_dict()['max_position_embeddings']
 
         self.bidirectional = bidirectional
-        self.directions = 2 if bidirectional else 1
-        #self.lstm = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
-        self.encoder = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
-        #self.decoder = nn.LSTM(embedding_dim, self.hidden_dim, num_layers=self.num_layers,batch_first=True,bidirectional=bidirectional,dropout=dropout)
-        self.decode_dense1 = otm.dense_layer(self.directions*self.hidden_dim, self.directions*self.hidden_dim,norm="LayerNorm",activation='ReLU')
-        self.decode_dense2 = otm.dense_layer(self.directions*self.hidden_dim, self.directions*self.hidden_dim,norm="LayerNorm",activation='ReLU')
-        self.linear_out = nn.Linear(self.directions*self.hidden_dim, vocab_size)
+        
+
+        #self.dropout = nn.Dropout(dropout,inplace=True)
+
         
         self.task_layer={}
         self.output_layer={}
-        common_output = self.directions*self.hidden_dim
+        common_output = embedding_dim
         for task in glue_tasks:
-            self.task_layer[task]=nn.Sequential(*[otm.dense_layer(common_output,common_output,norm="LayerNorm",activation="ReLU"),
+            self.task_layer[task]=nn.Sequential(*[otm.dense_layer(common_output,common_output,norm="LayerNorm",activation="ReLU",dropout=0.5),
                                                otm.dense_layer(common_output,common_output,norm="LayerNorm",activation="ReLU",dropout=0.5),
                                                otm.dense_layer(common_output,common_output,norm="LayerNorm",activation="ReLU",dropout=0.5),
                                                otm.dense_layer(common_output,common_output,norm="LayerNorm",activation="ReLU",dropout=0.5)])
         self.task_layer=nn.ModuleDict(self.task_layer)
-        for task in ['CoLA','MRPC','QNLI','QQP','RTE','SST-2','WNLI']:
-            self.output_layer[task] = nn.Linear(common_output,2)
-        for task in ['MNLI']:
-            self.output_layer[task] = nn.Linear(common_output,3)
-        for task in ['STS-B']:
-            self.output_layer[task] = nn.Linear(common_output,1)
+        for task in glue_tasks:
+            if task in ['CoLA','MRPC','QNLI','QQP','RTE','SST-2','WNLI']:
+                self.output_layer[task] = nn.Linear(common_output,2)
+            if task in ['MNLI']:
+                self.output_layer[task] = nn.Linear(common_output,3)
+            if task in ['STS-B']:
+                self.output_layer[task] = nn.Linear(common_output,1)
         self.output_layer=nn.ModuleDict(self.output_layer)
 
     def forward(self, input, task=None):
         #print('input',input.shape)
-        text=input 
+        text=input[:,:self.bert_max_position_embeddings] 
         device = text.device
         batch_size,seq_len = text.shape
-        embedded = self.word_to_vec(text)
+        
+        #with torch.no_grad():
+        bert_output = self.bert(text)
+        embedded = bert_output[0][:,0,]
+        #embedded = bert_output[1]
+        #print('\nbert0',bert_output[0].shape,'bert1',bert_output[1].shape,' use ',embedded.shape)
+
+        #print('bert output',embedded.shape)
     
-        _, (hidden,c) = self.encoder(embedded)
-        #print('embedded',embedded.shape)
-        #print('hidden',hidden)
-        #print('hidden',hidden.shape)
-        if self.bidirectional is True:
-            hidden = torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim = 1)
-            #hidden = self.dropout(torch.cat((hidden[-2,:,:], hidden[-1,:,:]), dim = 1))
-            #fc1 = F.relu(self.fc1(self.bn(hidden.squeeze(0))))
-            #fc1 = F.relu(self.fc1(hidden.squeeze(0)))
-        else:
-            hidden = hidden[-1,:,:]
-            #hidden = self.dropout(hidden[-1,:,:])
+        #hidden = self.dropout(hidden[-1,:,:])
         # output_size:(seq_len*batch_size,vocab_size)
-        output = self.task_layer[task](hidden)
+        output = self.task_layer[task](embedded)
         #print('lstm output',output.shape)
         output = self.output_layer[task](output)
         #print('final output',output.shape)
@@ -385,24 +406,9 @@ class RNNModel(nn.Module):
 
 
 
-
-#model = PoetryModel(HPARAMS)
-
-
-def bert_view_data(tensor,idx):
-    l = []
-    for i in tensor[idx,:]:
-        #s = vocab.itos[i]
-        l.append(i)
-    #s = ''.join(l)
-    #print(s)
-    return str(bert_tokenizer.decode(l)).replace('[CLS]','').replace('[SEP]','').replace('[PAD]','').replace('[UNK]','')
-
-
-
-
 criterion=torch.nn.CrossEntropyLoss()
 regression_criterion = torch.nn.MSELoss(reduction='mean')
+
 
 def loss_evaluation_fn(runtime,experiment):
     output=runtime['output']
@@ -424,8 +430,19 @@ def loss_evaluation_fn(runtime,experiment):
     #print('input',runtime.get('input'),runtime.get('input').shape)
     #print('output',output)
     #print('target',target)
+    #print('output shape',output.shape,'target shape',target.shape)
     #print('output',output.shape,'target',target.shape)
-    loss = criterion(output.view(-1,C),target.view(-1))
+    loss = criterion(output,target)
+    
+    models = experiment.get('custom_models')
+    model = models[0]
+    loss += otm.regularization(model)*1e-5
+    #L1_reg = 0
+    #for param in model.parameters():
+    #    if param.requires_grad:
+    #        L1_reg += torch.sum(torch.abs(param))
+    #loss = loss + L1_reg*1e-5
+    #loss = criterion(output.view(-1,C),target.view(-1))
     return loss,loss.item()
 
 def custom_train_fn(runtime,experiment):
@@ -460,7 +477,7 @@ def custom_train_fn(runtime,experiment):
     #with amp.scale_loss(loss, optimizer) as scaled_loss:
     #    scaled_loss.backward()
     loss.backward()
-    nn.utils.clip_grad_norm_(model.parameters(), 5)
+    #nn.utils.clip_grad_norm_(model.parameters(), 5)
     optimizer.step()
     return output,{'loss':loss.item()}
 
@@ -515,75 +532,45 @@ def generate_text(begin,model,device):
 
     return text
 
-def generate_text_samples(runtime,experiment,ret):
-    model = experiment['custom_models'][0]
-    device = experiment['device']
-
-    model = model.eval()
-    text_list=[]
-    for begin in begins:
-        print('begin',begin)
-        text = generate_text(begin,model,device)
-        text_list.append(text)
-
-    return {'display':'\n'.join(map(lambda x:x[0],text_list))}
 
 def create_custom_models_fn(runtime,experiment):
-    return [RNNModel(HPARAMS)]
+    global bert
+    bert = AutoModel.from_pretrained(BERT_PRETRAINED)
+    bert.resize_token_embeddings(len(tokenizer))
+    model = BertModel(bert,HPARAMS)
+    #from IPython import embed; embed("custom")
+    return [model]
 
-def load_model_dynamic_params(data):
-    global vocab_size
-    vocab_size=data["vocab_size"]
 
-def store_model_dynamic_params():
-    global vocab_size
-    return {"vocab_size":vocab_size}
-
-def gen_text_by_input(runtime,experiment,args):
-    #print(args)
-    #print(runtime)
-    #print(experiment)
-    model = experiment['custom_models'][0]
-    device = experiment['device']
-    begin=args
-    model = model.eval()
-    text = generate_text(begin,model,device)
-    print(text[0])
-
-def post_save_models(path):
-    print("Save vocab")
-    with open (os.path.join(path,"vocab.bin"), 'wb') as f: 
-        pickle.dump(TEXT.vocab, f)
-
-def pre_load_models(path):
-    global TEXT
-    global vocab_size
-    with open (os.path.join(path,"vocab.bin"), 'rb') as f: 
-        TEXT.vocab = pickle.load(f)
-        vocab_size= len(TEXT.vocab.stoi)
-        print('vocab_size',vocab_size)
 def matthews_corrcoef(runtime,experiment,ret):
-
     pred = ret.get('pred')
     target = ret.get('target')
     mcc = sklearn.metrics.matthews_corrcoef(pred,target)
     otu.logger.info('MCC:{}'.format(mcc))
     return ret
+    
+def print_hook(runtime,experiment,ret,info=""):
+    otu.logger.info(info)
+    return ret
+
 
 Experiment={
-    "hparams":{'optim':'Adam',
-               'lr':1e-4,
+    "hparams":{
+               'optim':'Adam',
+               #'optim':'SGD',
+               'lr':2e-5,
                'loader_n_worker':2,
-               'batch_size':256,
-               'n_epochs':300,
-               'Adam':{'betas':(0.5,0.999)}
+               #'batch_size':256,
+               'batch_size':64,
+               'n_epochs':200,
+               'Adam':{'betas':(0.5,0.999),'weight_decay':0.},
+               #'Adam':{'betas':(0.5,0.999),'weight_decay':0.1},
+               'SGD':{'momentum':0.5,'weight_decay':0},
+               'lr_scheduler':'StepLR'
               },
     # Define Experiment Model
     "create_custom_models_fn":create_custom_models_fn,
-    "load_model_dynamic_params":load_model_dynamic_params,
-    "store_model_dynamic_params":store_model_dynamic_params,
-    "post_save_models":post_save_models,
-    "pre_load_models":pre_load_models,
+    #"pre_load_models":pre_load_models,
     #"custom_models":[model],
     # Define function to create train dataset
     "create_train_dataset_fn":create_train_dataset_fn,
@@ -603,7 +590,8 @@ Experiment={
     "loss_evaluation_fn":loss_evaluation_fn,
     "custom_train_fn":custom_train_fn,
     # Define function to deep insight result in each iteration, can be None
-    "post_epoch_val_fn":{"CoLA":[otu.get_epoch_results,matthews_corrcoef],#(otu.epoch_insight_classification,{'nclass':2}),
+    "post_epoch_val_fn":{"CoLA":[(print_hook,{'info':'post_epoch_val_fn'}),otu.get_epoch_results,matthews_corrcoef,(otu.epoch_insight_classification,{'nclass':2})],
+                         #"CoLA":(otu.epoch_insight_classification,{'nclass':2}),
                          "SST-2":(otu.epoch_insight_classification,{'nclass':2}),
                          "MRPC":(otu.epoch_insight_classification,{'nclass':2}),
                          "QNLI":(otu.epoch_insight_classification,{'nclass':2}),
@@ -611,10 +599,10 @@ Experiment={
                          "RTE":(otu.epoch_insight_classification,{'nclass':2}),
                          "MNLI":(otu.epoch_insight_classification,{'nclass':3})},
     "post_batch_val_fn":otu.batch_result_extract,
-    "post_epoch_train_fn":{"CoLA":[otu.get_epoch_results,matthews_corrcoef,(otu.epoch_insight_classification,{'nclass':2})]},#None,#generate_text_samples,
     "post_batch_train_fn":otu.batch_result_extract,
+    "post_epoch_train_fn":{"CoLA":[(print_hook,{'info':'post_epoch_train_fn'}),otu.get_epoch_results,matthews_corrcoef,(otu.epoch_insight_classification,{'nclass':2})]},
     #"validate_batch_val_result_fn":validate_batch_val_result_fn,
-    "checkpoint_n_epoch":10,
+    #"checkpoint_n_epoch":10,
     "train_validate_each_n_epoch":1,
     "train_validate_final_with_best":True,
 }

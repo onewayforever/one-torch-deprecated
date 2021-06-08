@@ -85,8 +85,20 @@ def dense_layer(input_dim, output_dim, norm=None,activation=None, dropout=0):
         layer = getattr(torch.nn.modules,activation)() 
         dense.add_module(activation,layer)
     if dropout>0:
-        dense.add_module("Dropout", nn.Dropout(dropout))
+        dense.add_module("Dropout", torch.nn.Dropout(dropout))
     return dense
+
+def regularization(model,l=1,with_bias=False):
+    #reg = torch.tensor(0.)
+    reg = 0
+    #reg = torch.tensor(0., requires_grad=True)
+    for name, param in model.named_parameters():
+        if with_bias:
+            reg = reg + torch.norm(param, l)
+        else:
+            if 'weight' in name:
+                reg = reg + torch.norm(param, l)
+    return reg
 
 def test_res1d():
     x = torch.randn(30,64,134)

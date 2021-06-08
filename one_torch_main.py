@@ -24,8 +24,10 @@ from types import MethodType
 import readline
 import io
 import yaml
+import logging
 #sys.stdout = io.TextIOWrapper(sys.stdout.buffer,encoding='gb18030') 
 
+logging.basicConfig(format='%(message)s', level=logging.INFO)
 torch.set_printoptions(linewidth=128)
 #torch.set_printoptions(threshold=12000)
 
@@ -96,7 +98,7 @@ EXPERIMENT_DEFAULT={
         'experiment_path':None,
         'multi_task_labels':None,
         'use_tensorboard':False,
-        'validate_n_batch_in_train':1,     # only validate n batch while training 
+        'validate_n_batch_in_train':-1,     # only validate n batch while training 
         'train_validate_each_n_batch':0, # validate on every n batch 
         'train_validate_each_n_epoch':0,  # validate on every n epoch
         'train_validate_final_with_best':False  # validate at the end of trainning with best model
@@ -126,7 +128,7 @@ def run_experiment_callback(fn_name,*params):
     fn_info_list = Experiment.get(fn_name)
     if fn_info_list is None:
         return ret
-    #print('run {}'.format(fn_name))
+    #print('\n--run {}--\n'.format(fn_name))
     if not isinstance(fn_info_list,list):
         fn_info_list=[fn_info_list]
     for fn_info in fn_info_list:
@@ -142,6 +144,15 @@ def run_experiment_callback(fn_name,*params):
             else:
                 fn, kwargs=fn_info
                 ret=fn(Runtime,Experiment,ret,**kwargs)
+        elif isinstance(fn_info,list):
+            for f in fn_info:
+                if callable(f):
+                    ret=f(Runtime,Experiment,ret)
+                elif len(f)==1:
+                    ret=f(Runtime,Experiment,ret)
+                else:
+                    fn, kwargs=f
+                    ret=fn(Runtime,Experiment,ret,**kwargs)
         else:
             ret=fn_info(Runtime,Experiment,ret)
         assert ret is not None
@@ -312,6 +323,7 @@ def save_train_epoch_list(epoch_list):
     length=len(epoch_list)
     if length==0:
         return 
+    #print(epoch_list)
     learning_curve_path=os.path.join(experiment_home_dir,'learning_curve.png')
     logger.info('Save Learning curve path to {}'.format(learning_curve_path))
     plt.title('Result Analysis')
@@ -322,6 +334,11 @@ def save_train_epoch_list(epoch_list):
         for k in source_list[0]:
             if 'loss' in k:
                 plt.plot(list(range(length)), np.array(list(map(lambda x:x[k],source_list))),label='_'.join([source,k]))
+            else:
+                task = k
+                for j in source_list[0][task]:
+                    if 'loss' in j:
+                        plt.plot(list(range(length)), np.array(list(map(lambda x:x[k][j],source_list))),label='_'.join([source,k,j]))
     plt.legend()  
     plt.xlabel('iteration times')
     plt.ylabel('loss')
@@ -452,6 +469,7 @@ def validate_task(Runtime,Experiment,task=None):
                 data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data)
             else:
                 data, target = Experiment['data_preprocess_fn'](Runtime,Experiment,original_data,task)
+            #print(batch_idx)
             [data, target] = to_device([data,target],device)
             Runtime['input']=data
             Runtime['target']=target
@@ -487,6 +505,7 @@ def validate_task(Runtime,Experiment,task=None):
     #    epoch_insight_result = run_experiment_callback('val_epoch_insight_fn')
     #    #epoch_insight_result = epoch_insight_fn(Runtime)
     #    #epoch_insight_result += epoch_insight_fn(guess_list)  ##
+    #print('validate results',Runtime['epoch_results'])
     epoch_insight_result = run_experiment_callback('post_epoch_val_fn')
 
     #total_num=len(val_loader)
@@ -1022,13 +1041,15 @@ def train_wrapper():
         #if save_flag and epoch >= Experiment['checkpoint_warmup']:
         #    save_checkpoints(epoch)
         loss_str=extract_loss_info(train_loss_info)
-        epoch_log=f'Epoch: {epoch:02} | Elapse: {epoch_mins}m {epoch_secs}s |\tTrain: {loss_str} '
+        epoch_log=f'### Epoch: {epoch:02} | Elapse: {epoch_mins}m {epoch_secs}s |\tTrain: {loss_str} '
         if val_loader and Experiment['train_validate_each_n_epoch']>0:
             loss_str=extract_loss_info(val_loss_info)
             epoch_log += f'Val: {loss_str} '
         logger.info(epoch_log)
+        #print('train_insight',train_insight)
         if train_insight.get('display'):
             logger.info('Epoch {} Train Detail:\n'.format(epoch)+str(train_insight.get('display')))
+        #print('val_insight',val_insight)
         if val_insight.get('display'):
             logger.info('Epoch {} Val Detail:\n'.format(epoch)+str(val_insight.get('display')))
         elif Experiment.get('multi_task_labels'):

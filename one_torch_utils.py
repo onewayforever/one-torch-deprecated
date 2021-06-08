@@ -10,6 +10,9 @@ import random
 import csv
 import cmd
 import yaml
+import sys
+
+logging.basicConfig(format='%(message)s', level=logging.INFO)
 
 Runtime=None
 Experiment=None
@@ -71,6 +74,14 @@ class MTLoader(object):
     def __len__(self):
         return self.total_batches 
     def __next__(self):
+        if len(self.next_loaders)==0:
+            raise StopIteration
+        task = random.choice(self.next_loaders)
+        data = next(self.iterators[task])
+        self.all_len[task]-=1
+        if self.all_len[task]<=0:
+            self.next_loaders.remove(task)
+        return data,task
         while True:
             if len(self.next_loaders)==0:
                 raise StopIteration
@@ -151,25 +162,43 @@ def make_confusion_matrix(pred,target,nclass):
 
     return confusion_matrix,statistics
 
+def __get_epoch_results(result_list):
+    pred_list=list(map(lambda x:x['output'],result_list))
+    target_list=list(map(lambda x:x['target'],result_list))
+    pred=torch.cat(pred_list,dim=0)
+    target=torch.cat(target_list,dim=0)
+    if pred.shape[1]>=2:
+        pred = torch.argmax(pred, dim=1)
+    #pred = pred.item()
+    #target = target.item()
+    return pred,target
+
+def get_epoch_results(runtime,experiment,ret):
+    result_list = runtime.get('epoch_results')
+    #print('result_list',result_list)
+    if len(result_list)==0:
+        return ret
+    pred,target = __get_epoch_results(result_list)
+    ret['pred']=pred
+    ret['target'] = target
+    return ret
+
 def epoch_insight_Nclass(N_class,result_list):
     #print('insight',result_list)
     if len(result_list)==0:
         return None
+    '''
     pred_list=list(map(lambda x:x['output'],result_list))
     target_list=list(map(lambda x:x['target'],result_list))
     pred=torch.cat(pred_list,dim=0)
     target=torch.cat(target_list,dim=0)
     pred = torch.argmax(pred, dim=1)
+    '''
+    pred,target = __get_epoch_results(result_list)
     #print('',pred.shape,target.shape)
     #print(pred,target)
     matrix,statistics = make_confusion_matrix(pred,target,N_class)
     return matrix, statistics
-    #print(matrix)
-    TP = np.diag(matrix)
-    acc = TP.sum()/matrix.sum()
-    def view_statistics(info):
-        return 'ACC:{:.3f},TP:{},TN:{},FN:{},FP:{},Precise:{:.3f},Recall:{:.3f} sum:{}\n{}'.format(acc,info['TP'],info['TN'],info['FN'],info['FP'],info['Precise'],info['Recall'],matrix.sum(),matrix.astype(int))
-    return view_statistics(statistics[N_class-1]) 
 
 def create_default_epoch_insight_fn(N_class):  
     def fn(runtime):
@@ -205,25 +234,38 @@ def batch_result_extract(runtime,experiment,ret):
 
 class MyLogger():
     def __init__(self,log_file=None,sub_log=None):
+        #logging.basicConfig(format='%(message)s', level=logging.INFO)
         self.id = -1
-        self.logger = logging.getLogger()
+        self.logger = logging.getLogger('root')
+       
         self.logger.setLevel('INFO')
-        chlr = logging.StreamHandler() 
-        self.logger.addHandler(chlr)
+        #chlr = logging.StreamHandler(sys.stdout) 
+        #simple_formatter = logging.Formatter("%(message)s")
+        #chlr.setFormatter(simple_formatter)
+        #self.logger.addHandler(chlr)
+        detail_formatter = logging.Formatter("%(asctime)s - %(message)s")
         if log_file:
             fhlr = logging.FileHandler(log_file) 
+            fhlr.setFormatter(detail_formatter)
             self.logger.addHandler(fhlr)
         if sub_log:
             sfhlr = logging.FileHandler(sub_log)
+            sfhlr.setFormatter(detail_formatter)
             self.logger.addHandler(sfhlr)
     def info(self,record):
         if self.id==0:
-            self.logger.info(record)
+            if isinstance(record,str):
+                lines = record.split('\n')
+                for line in lines:
+                    self.logger.info(line)
+            else:
+                self.logger.info(record)
  
     
 
 def logger_init(log_file=None,sub_log=None):
     global logger
+    logging.basicConfig(format='%(message)s', level=logging.INFO)
     logger = MyLogger(log_file,sub_log)
     rank = Runtime['__rank']
     if rank<0:
@@ -231,19 +273,6 @@ def logger_init(log_file=None,sub_log=None):
     else:
         logger.id = rank
     return logger
-    '''
-    logger = logging.getLogger()
-    logger.setLevel('INFO')
-    chlr = logging.StreamHandler() 
-    logger.addHandler(chlr)
-    if log_file:
-        fhlr = logging.FileHandler(log_file) 
-        logger.addHandler(fhlr)
-    if sub_log:
-        sfhlr = logging.FileHandler(sub_log)
-        logger.addHandler(sfhlr)
-    return logger
-    '''
 
 def save_results_to_csv(runtime,experiment,tag,results):
     results_csv=runtime['results']['csv']
