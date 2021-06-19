@@ -56,6 +56,31 @@ def update_vars_by_conf(myglobals):
             #else:
             #    exec('{} = {}'.format(k,custom_vars[k]))
 
+class Batch():
+    pass
+
+def collate_fn_by_torchtext(dataset):
+    assert hasattr(dataset,'fields')
+    fields = dataset.fields
+    #from torchtext import Batch
+    def collate_fn(batch):
+        batch_data = Batch()
+        for f in fields:
+            if f is None or fields[f] is None:
+                continue
+            field = fields[f]
+            data = list(map(lambda x:getattr(x,f),batch))
+            if field.sequential:
+                max_len = max(map(lambda x:len(x),data))
+                pad_token = field.pad_token
+                text = list(map(lambda x:x+([pad_token]*(max_len-len(x))),data))
+                setattr(batch_data,f,torch.stack(list(map(lambda x:torch.tensor(x),text))))
+            else:
+                setattr(batch_data,f,torch.tensor(list(map(lambda x:getattr(x,f),batch))))
+        return batch_data
+    
+    return collate_fn
+
 class MTLoader(object):
     def __init__(self,dataloaders):
         assert isinstance(dataloaders,dict)
@@ -183,6 +208,13 @@ def get_epoch_results(runtime,experiment,ret):
     ret['target'] = target
     return ret
 
+def hook_record_scalars(ret,records):
+    if ret.get('scalars') is None:
+        ret['scalars']={}
+    ret['scalars'].update(records)
+    return ret
+
+
 def epoch_insight_Nclass(N_class,result_list):
     #print('insight',result_list)
     if len(result_list)==0:
@@ -211,6 +243,33 @@ def create_default_epoch_insight_fn(N_class):
         return view_statistics(statistics[N_class-1]) 
     return fn
 
+def record_learning_curve(metric,scalar,by_interval='epoch',by_task=None,label=None):
+    global Runtime
+    assert by_interval in ['epoch','batch'] 
+    learning_curve=Runtime['learning_curve']
+    task = Runtime['task']
+    if task is not None:
+        if by_task is not None:
+            task = by_task
+        if learning_curve.get(task) is None:
+            learning_curve[task]={}
+        learning_curve=learning_curve[task]
+    if learning_curve.get(metric) is None:
+        learning_curve[metric]={}
+    if learning_curve[metric].get(by_interval) is None:
+        learning_curve[metric][by_interval]={}
+    if by_interval=='epoch':
+        idx = Runtime['epoch']
+    if by_interval=='batch':
+        idx= Runtime['batches_done']
+    if learning_curve[metric][by_interval].get(idx) is None:
+        learning_curve[metric][by_interval][idx]={}
+    if label is None:
+        label = Runtime['trace']
+    learning_curve[metric][by_interval][idx][label]=scalar
+
+    
+
 def epoch_insight_classification(runtime,experiment,ret,nclass=1):
     assert nclass > 1
     if runtime.get('epoch_results') is None:
@@ -219,11 +278,35 @@ def epoch_insight_classification(runtime,experiment,ret,nclass=1):
     matrix,statistics = epoch_insight_Nclass(nclass,runtime.get('epoch_results'))
     TP = np.diag(matrix)
     acc = TP.sum()/matrix.sum()
+    scalars = {'ACC':acc}
+    
     def view_statistics(info):
         return 'ACC:{:.3f},TP:{},TN:{},FN:{},FP:{},Precise:{:.3f},Recall:{:.3f} sum:{}\n{}'.format(acc,info['TP'],info['TN'],info['FN'],info['FP'],info['Precise'],info['Recall'],matrix.sum(),matrix.astype(int))
     ret['display']=view_statistics(statistics[nclass-1]) 
+    info=statistics[nclass-1]
+    info['F1']=2*(info['Precise']*info['Recall'])/(info['Precise']+info['Recall'])
+    scalars.update(info)
+    hook_record_scalars(ret,scalars)
+    '''
+    if len(to_plot)>0:
+        #assert label is not None
+        for metric in to_plot:
+            if statistics[nclass-1].get(metric):
+                scalar = statistics[nclass-1].get(metric)
+            elif metric == 'ACC':
+                scalar = acc
+            record_learning_curve(metric=metric,scalar=scalar,by_interval=interval)
     #print(ret)
+    '''
     return ret
+
+def to_plot(runtime,experiment,ret,keys):
+    scalars = ret.get('scalars')
+    assert scalars is not None
+    for key in keys:
+        record_learning_curve(metric=key,scalar=scalars[key],by_interval='epoch')
+    return ret
+        
 
 def batch_result_extract(runtime,experiment,ret):
     #print(runtime['output'])
@@ -252,14 +335,15 @@ class MyLogger():
             sfhlr = logging.FileHandler(sub_log)
             sfhlr.setFormatter(detail_formatter)
             self.logger.addHandler(sfhlr)
-    def info(self,record):
-        if self.id==0:
-            if isinstance(record,str):
-                lines = record.split('\n')
-                for line in lines:
-                    self.logger.info(line)
-            else:
-                self.logger.info(record)
+    def info(self,record,rank=0):
+        if self.id!=rank and rank>=0:
+            return
+        if isinstance(record,str):
+            lines = record.split('\n')
+            for line in lines:
+                self.logger.info(line)
+        else:
+            self.logger.info(record)
  
     
 

@@ -57,6 +57,7 @@ Runtime={
     'total_train_batches':0,
     'total_val_size':0,
     'total_val_batches':0,
+    'learning_curve':{},
     'results':{'csv':{},'file':{},'img':{}}
 }
 
@@ -98,6 +99,7 @@ EXPERIMENT_DEFAULT={
         'experiment_path':None,
         'multi_task_labels':None,
         'use_tensorboard':False,
+        'auto_save':False,
         'validate_n_batch_in_train':-1,     # only validate n batch while training 
         'train_validate_each_n_batch':0, # validate on every n batch 
         'train_validate_each_n_epoch':0,  # validate on every n epoch
@@ -173,9 +175,13 @@ def epoch_time(elapsed_time):
 def to_ddp(models):
     global Runtime
     global Experiment
-    print('ddp of local_rank {} binding to gpu {}'.format(Runtime['local_rank'],torch.cuda.current_device()))
-    logger.info('ddp of local_rank {} binding to gpu {}'.format(Runtime['local_rank'],torch.cuda.current_device()))
-    models = list(map(lambda x:torch.nn.parallel.DistributedDataParallel(x,device_ids=[torch.cuda.current_device()],output_device=torch.cuda.current_device()),models))
+    local_rank = Runtime['local_rank']
+    #print('ddp of local_rank {} binding to gpu {}'.format(Runtime['local_rank'],torch.cuda.current_device()))
+    logger.info('ddp of local_rank {} binding to gpu {}'.format(local_rank,local_rank),rank=-1)
+    #models = list(map(lambda x:torch.nn.parallel.DistributedDataParallel(x,device_ids=[torch.cuda.current_device()],output_device=torch.cuda.current_device()),models))
+    #map(lambda x:torch.nn.parallel.DistributedDataParallel(x,device_ids=[torch.cuda.current_device()],output_device=torch.cuda.current_device()),models)
+    map(lambda x:torch.nn.parallel.DistributedDataParallel(x,device_ids=[local_rank],output_device=local_rank),models)
+    #map(lambda x:torch.nn.parallel.DistributedDataParallel(x),models)
     #models = list(map(lambda x:torch.nn.SyncBatchNorm.convert_sync_batchnorm(x),models))
     return models
 
@@ -313,8 +319,45 @@ def default_evaluation_fn(runtime,experiment):
         output = output[0]
     loss = loss_criterion(output,target) 
     return loss,loss.item()
-    
 
+def __save_learning_curve(title,learning_curve):
+    learning_curve_path=os.path.join(experiment_home_dir,'{}_learning_curve.png'.format(title))
+    logger.info('Save {} Learning curve path to {}'.format(title,learning_curve_path))
+    plt.cla()
+    plt.title('{} Result Analysis'.format(title))
+    if learning_curve.get('epoch'):
+        interval = 'epoch'
+    if learning_curve.get('batch'):
+        interval = 'batch'
+    for source in learning_curve[interval][0].keys():
+        X=list(filter(lambda x:learning_curve[interval][x].get(source) is not None,learning_curve[interval].keys()))
+        if len(X)==0:
+            continue
+        Y=list(map(lambda x:learning_curve[interval][x][source],X))
+        plt.plot(X,np.array(Y),label=source)
+    plt.legend()  
+    plt.xlabel('iteration {} times'.format(interval))
+    plt.ylabel(title)
+    plt.savefig(learning_curve_path)
+    return
+
+def save_learning_curve():
+   global Runtime
+   global Experiment 
+   #print(Runtime['learning_curve'])
+   tasks = Experiment['multi_task_labels']
+   if tasks is None:
+      learning_curves = Runtime['learning_curve']
+      for metric in learning_curves.keys():
+          __save_learning_curve(metric,learning_curves[metric])
+   else:
+      for task in Runtime['learning_curve'].keys():
+          learning_curves = Runtime['learning_curve'][task]
+          for metric in learning_curves.keys():
+              __save_learning_curve('{}_{}'.format(task,metric),learning_curves[metric])
+
+    
+'''
 def save_train_epoch_list(epoch_list):
     if just_a_try:
         return
@@ -324,6 +367,7 @@ def save_train_epoch_list(epoch_list):
     if length==0:
         return 
     #print(epoch_list)
+    print(Runtime['learning_curve'])
     learning_curve_path=os.path.join(experiment_home_dir,'learning_curve.png')
     logger.info('Save Learning curve path to {}'.format(learning_curve_path))
     plt.title('Result Analysis')
@@ -353,6 +397,7 @@ def save_train_epoch_list(epoch_list):
                     tb_writer.add_scalars(k,{'train':item['train'].get(k),'val':item['val'].get(k)},i)
                 elif item['train'].get(k) : 
                     tb_writer.add_scalars(k,{'train':item['train'].get(k)},i)
+'''
     
 
 def epoch_train(Runtime,Experiment):
@@ -385,6 +430,7 @@ def epoch_train(Runtime,Experiment):
         [data, target] = to_device([data,target],device)
         #data, target = data.to(device), target.to(device)
         Runtime['input']=data
+        Runtime['trace']="train"
         Runtime['target']=target
         Runtime['batch_idx']=batch_idx
         output, loss_info = Experiment['custom_train_fn'](Runtime,Experiment)
@@ -403,8 +449,10 @@ def epoch_train(Runtime,Experiment):
         
         if val_loader is not None  and Experiment.get('train_validate_each_n_batch')>0:
             if Runtime['batches_done']%Experiment['train_validate_each_n_batch']==0:
+                Runtime['trace']="val"
                 validate(Runtime,Experiment)
 
+    Runtime['trace']="train"
     epoch_insight_result = run_experiment_callback('post_epoch_train_fn')
 
     for k in loss_info:
@@ -685,7 +733,7 @@ def init_experiment(action):
     #print('device',device)
     #print('current device',torch.cuda.current_device())
     Experiment['device']=device
-    local_rank=HPARAMS['local_rank']
+    local_rank=Runtime['local_rank']
 
     if use_cuda:
         torch.cuda.set_device(local_rank)
@@ -786,15 +834,58 @@ def init_experiment(action):
         kw_data_loader_args['num_workers']=HPARAMS['loader_n_worker'] 
    
     #print('dataset',train_dataset)
+    def build_data_loader(prefix,dataset,batch_size,ddp=False):
+        if dataset is None:
+            return None
+        dataloader=None
+        if Experiment.get('create_{}_loader_fn'.format(prefix)):
+            if isinstance(dataset,dict):
+                dataloader = {}
+                for task in dataset:
+                    dataloader[task] = Experiment['create_{}_loader_fn'.format(prefix)](dataset[task],batch_size=batch_size,task=task)
+            else:
+                dataloader = Experiment['create_{}_loader_fn'.format(prefix)](dataset,batch_size=batch_size)
+            return dataloader
+        shuffle = True if prefix=='train' else False
+        drop_last = True if prefix=='train' else False
+        if ddp:
+            if isinstance(dataset,dict):
+                dataloader = {}
+                for task in dataset:
+                    sampler = torch.utils.data.distributed.DistributedSampler(dataset[task])
+                    fn=create_collate_fn(dataset[task])
+                    dataloader[task] = torch.utils.data.DataLoader(dataset[task],batch_size=batch_size,  sampler=sampler,collate_fn=fn,**kw_data_loader_args,drop_last=drop_last)
+            else:
+                sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+                fn=create_collate_fn(dataset)
+                dataloader = torch.utils.data.DataLoader(dataset,batch_size=batch_size,  sampler=sampler,collate_fn=fn,**kw_data_loader_args,drop_last=drop_last)
+        else:
+            if isinstance(train_dataset,dict):
+                dataloader = {}
+                for task in dataset:
+                    fn=create_collate_fn(dataset[task])
+                    dataloader[task] = torch.utils.data.DataLoader(dataset[task],batch_size=batch_size, shuffle=shuffle, collate_fn=fn,**kw_data_loader_args,drop_last=drop_last)
+            else:
+                fn=create_collate_fn(dataset)
+                dataloader = torch.utils.data.DataLoader(dataset,batch_size=batch_size, shuffle=shuffle, collate_fn=fn,**kw_data_loader_args,drop_last=drop_last)
+        return dataloader
 
+    train_loader = build_data_loader('train',train_dataset,HPARAMS['train_batch_size'],ddp_flag)
+    val_loader = build_data_loader('val',val_dataset,HPARAMS['val_batch_size'],False)
+    infer_loader = build_data_loader('infer',infer_dataset,HPARAMS['infer_batch_size'],False)
+
+    '''
     if ddp_flag:
         if train_loader is None and train_dataset is not None:
+            print('train datase is not None !!!!!!!!!!!!!!!!!')
             train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
             fn=create_collate_fn(train_dataset)
             if Experiment.get('create_train_loader_fn'):
                 train_loader = Experiment['create_train_loader_fn'](train_dataset,batch_size=HPARAMS['train_batch_size'])
+                print('predefined',train_loader)
             else:
                 train_loader = torch.utils.data.DataLoader(train_dataset,batch_size=HPARAMS['train_batch_size'], shuffle=False, sampler=train_sampler,collate_fn=fn,**kw_data_loader_args,drop_last=True)
+                print('default',train_loader)
         if val_loader is None and val_dataset is not None:
             val_sampler = torch.utils.data.distributed.DistributedSampler(val_dataset)
             fn=create_collate_fn(val_dataset)
@@ -830,16 +921,17 @@ def init_experiment(action):
                 infer_loader = Experiment['create_infer_loader_fn'](infer_dataset,batch_size=HPARAMS['infer_batch_size'])
             else:
                 infer_loader = DataLoader(infer_dataset, **kw_data_loader_args, batch_size=HPARAMS['infer_batch_size'],shuffle=False,collate_fn=fn,drop_last=False)
+    '''
 
 
     if action=='train':
-        assert train_loader
+        assert train_loader is not None
         Runtime['total_train_batches']=len(train_loader)
     if action=='val':
-        assert val_loader
+        assert val_loader is not None
         Runtime['total_val_batches']=len(val_loader)
     if action=='infer':
-        assert infer_loader
+        assert infer_loader is not None
         Runtime['total_infer_batches']=len(infer_loader)
     if action=='view':
         if train_dataset is not None or train_loader is not None:
@@ -891,8 +983,10 @@ def init_experiment(action):
         try:
             if tb_writer:
                 tb_writer.add_graph(model)
+                tb_writer.flush()
         except Exception as e:
             #fails all the time, don't know why
+            print('Fail to log model to tensorboard')
             pass
     logger.info("### Total Parameters:{} size:{}MB\tTrainable Parameters:{} size:{}MB###".format(total_parameters,
                          int(total_parameters_size/1024/1024),
@@ -939,6 +1033,7 @@ def train_wrapper():
     custom_parameters = Experiment['custom_parameters']
     train_loader = Experiment['train_loader']
     val_loader = Experiment['val_loader']
+    train_start_time = time.time()
 
     assert train_loader is not None
 
@@ -974,7 +1069,7 @@ def train_wrapper():
     val_insight={}
     sep='\n\t'
     #sep='| '
-    train_epoch_list=[]
+    #train_epoch_list=[]
     print('Start Train iteration...')
     Runtime['step']='train'
     Runtime['train_batches']=len(train_loader)
@@ -991,13 +1086,15 @@ def train_wrapper():
         if Experiment['train_sampler']:
             Experiment['train_sampler'].set_epoch(epoch)
         Runtime['epoch']=epoch
-        Runtime['trace']='epoch_train'
+        Runtime['trace']='train'
         start_time = time.time()
         train_loss_info,train_insight = epoch_train(Runtime,Experiment)
         if sig_int_flag:
             print('Exit Training\n')
             break
         #train_loss_info,train_insight = epoch_train(args, custom_models, loss_criterions,device, train_loader, custom_optimizers, epoch)
+        for k in train_loss_info:
+            otu.record_learning_curve(metric=k,scalar=train_loss_info[k],by_interval='epoch',by_task="")
         epoch_loss=train_loss_info.get('loss')
         if HPARAMS['early_stop'] > 0:
             if epoch_loss:
@@ -1013,12 +1110,23 @@ def train_wrapper():
                 if scheduler._last_lr != current_lr:
                     print('use learning rate',scheduler._last_lr)
                     current_lr = scheduler._last_lr
+        #if Runtime['__rank']!=0:
+        #    continue
+        #print('__rank',Runtime['__rank'])
+        #dist.barrier()
 
         if val_loader and Experiment.get('train_validate_each_n_epoch')>0:
             if epoch%Experiment.get('train_validate_each_n_epoch')==0:
-                Runtime['trace']='epoch_val'
+                Runtime['trace']='val'
                 #print('run validate per epoch')
                 val_time,val_loss_info,val_insight = validate(Runtime,Experiment)
+                if isinstance(val_time,dict):
+                    for t in val_loss_info:
+                        for k in val_loss_info[t]:
+                            otu.record_learning_curve(metric=k,scalar=val_loss_info[t][k],by_interval='epoch',by_task="",label="{}_val".format(t))
+                else:
+                    for k in val_loss_info:
+                        otu.record_learning_curve(metric=k,scalar=val_loss_info[k],by_interval='epoch',by_task="")
                 #val_loss_info,val_insight = validate(args, custom_models, loss_criterions,device, val_loader,n_batch=HPARAMS['epoch_val_n_batch'],from_epoch=epoch)
                 if isinstance(val_time,dict):
                     epoch_loss = sum(map(lambda x:x[1].get('loss'),val_loss_info.items()))
@@ -1061,7 +1169,7 @@ def train_wrapper():
             #epoch_log+=(sep+'Val { '+str(val_insight)+' } ')
         
         #logger.info(epoch_log)
-        train_epoch_list.append({'train':train_loss_info,'val':val_loss_info})
+        #train_epoch_list.append({'train':train_loss_info,'val':val_loss_info})
         #use early stop
         if HPARAMS['early_stop'] > 0:
             if check_loss is None:
@@ -1075,9 +1183,13 @@ def train_wrapper():
             if patience==0:
                 logger.info("Evoke Early Stopping!")
                 break
-    logger.info('Train {} Epochs'.format(epoch)) 
+    train_end_time = time.time()
+    train_mins, train_secs = epoch_time(train_end_time - train_start_time)
+    logger.info('Train {} Epochs, Elapse {}h {}min'.format(epoch,int(train_mins/60),int(train_mins%60))) 
     run_experiment_callback('post_train_fn')
-    save_train_epoch_list(train_epoch_list)
+    #save_train_epoch_list(train_epoch_list)
+    #save_train_epoch_list(train_epoch_list)
+    save_learning_curve()
 
 def show_results():
     global Runtime
@@ -1503,8 +1615,10 @@ def log_hparams():
                 tmp[k]=str(v)
             else:
                 tmp[k]=v
+        print('log to tensorboard')
         print(tmp)
         tb_writer.add_hparams(tmp,{})
+        tb_writer.flush()
 
 
 def __save_models(custom_models,path):
@@ -1522,6 +1636,8 @@ def __save_models(custom_models,path):
 
 def save_models():
     if just_a_try:
+        return
+    if not Experiment.get('auto_save'):
         return
     if Runtime['__rank']!=0:
         return
@@ -1665,7 +1781,7 @@ if __name__=="__main__":
     load_checkpoints()
     train_wrapper()
     #save_models()  #save models by every improvement
-    if Experiment.get('val_loader') and not just_a_try and Experiment['train_validate_final_with_best']:
+    if Experiment.get('val_loader') and not just_a_try and Experiment['train_validate_final_with_best'] and Experiment['auto_save']:
         logger.info('Validate with best model')
         models_path=os.path.join(experiment_home_dir,'models')
         load_models(models_path)

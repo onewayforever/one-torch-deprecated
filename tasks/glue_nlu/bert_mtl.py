@@ -60,8 +60,8 @@ HPARAMS = {
 #print(globals())
 #print('try update vars')
 scale=1
-#glue_tasks=['CoLA']
-glue_tasks=['CoLA','SST-2']
+glue_tasks=['CoLA']
+#glue_tasks=['CoLA','SST-2']
 #glue_tasks=['CoLA','STS-B']
 #glue_tasks=['QQP','QNLI','CoLA','SST-2','WNLI']
 #glue_tasks=['RTE','QQP','QNLI','MNLI','CoLA','SST-2','WNLI']
@@ -70,7 +70,7 @@ glue_tasks=['CoLA','SST-2']
 #glue_tasks=['QNLI']#, 'RTE', 'SST-2', 'STS-B', 'WNLI']
 #glue_tasks=['WNLI']
 #glue_tasks=['CoLA', 'MRPC', 'QNLI', 'RTE', 'SST-2', 'STS-B', 'WNLI']
-##glue_tasks=['CoLA','MNLI', 'MRPC', 'QNLI', 'QQP', 'RTE', 'SST-2', 'STS-B', 'WNLI']
+#glue_tasks=['CoLA','MNLI', 'MRPC', 'QNLI', 'QQP', 'RTE', 'SST-2', 'STS-B', 'WNLI']
 otu.update_vars_by_conf(globals())
 #print('W2V_TXT_FILE',W2V_TXT_FILE)
 w2v_vector = None
@@ -89,7 +89,7 @@ TEXT = data.Field(batch_first = True,
                   use_vocab = False,
                   #tokenize=lambda x: x.split(),
                   #tokenize = tokenizer.encode,
-                  tokenize = lambda x:tokenizer.encode(x,add_special_tokens=False),
+                  tokenize = lambda x:tokenizer.encode(x,add_special_tokens=False)[:128],
                   #tokenize='spacy',  tokenizer_language='en_core_web_sm',
                   #tokenize = tokenize_and_encode,
                   pad_token = pad_token_idx,
@@ -123,8 +123,8 @@ def entailment_fn(x):
     else:
         return 0
 
-BINARY = data.Field(sequential=False,use_vocab=False,dtype = torch.long)
-FLOAT = data.Field(sequential=False,use_vocab=False,dtype = torch.float)
+BINARY = data.Field(sequential=False,use_vocab=False,dtype = torch.long,preprocessing=lambda x:int(x))
+FLOAT = data.Field(sequential=False,use_vocab=False,dtype = torch.float,preprocessing=lambda x:float(x))
 TRIPLE = data.Field(sequential=False,use_vocab=False,dtype = torch.long,preprocessing=triple_fn)
 ENTAILMENT = data.Field(sequential=False,use_vocab=False,dtype = torch.long,preprocessing=entailment_fn)
 
@@ -265,7 +265,9 @@ def create_val_dataset_fn(path):
     return all_datasets 
 
 
-def create_dataloader(dataset,batch_size):
+def create_dataloader(dataset,batch_size,task=None):
+    return data.BucketIterator(dataset, batch_size = batch_size,sort_key=lambda x: len(x.sentence1),sort=False)
+    '''
     if isinstance(dataset,dict):
         all_loaders={}
         for task in dataset:
@@ -276,6 +278,7 @@ def create_dataloader(dataset,batch_size):
         train_iterator = data.BucketIterator(dataset, batch_size = batch_size,sort_key=lambda x: len(x.sentence1),sort=False)
         #train_iterator = data.BucketIterator(dataset, batch_size = batch_size,sort_key=lambda x: len(x.sentence1),sort=True)
         return train_iterator
+    '''
 
 def data_preprocess_fn(runtime,experiment,original_data,task=None):
     #print('task',task) 
@@ -490,48 +493,6 @@ def pick_top_n(preds, top_n=5):
     return c
 
 
-def generate_text(begin,model,device):
-
-
-    text_len = 30 
-    #samples = [convert.word_to_int(c) for c in begin]
-    #samples = bert_tokenizer.encode(begin,add_special_tokens=False) #[:-1]
-    with torch.no_grad():
-        samples = TEXT.numericalize(begin).view(1,-1)
-        #print('samples',samples)
-        input_txt = torch.LongTensor(samples)
-        input_txt = input_txt.to(device)
-        #input_txt = torch.Tensor(input_txt)
-        _, init_state = model(input_txt)
-        result = samples
-        #print('result',result)
-        model_input = input_txt[:, -1][:, None]
-        for i in range(text_len):
-        #print(i)
-        #print(model_input.shape)
-        #print(model_input)
-            out, init_state = model(model_input, init_state)
-        #print('out',out.shape)
-        #print(out)
-            pred = torch.argmax(out,dim=2)
-        #pred = pick_top_n(out.data)
-        #print('pred',pred.shape)
-        #print(pred)
-            model_input = pred #torch.LongTensor(pred)
-        #print(int(pred[0]))
-        #print(pred)
-        #print('cat',result.shape,pred.shape)
-            result = torch.cat([result,pred.cpu()],dim=1)
-        #print(result)
-    #text = convert.arr_to_text(result)
-    #print(result)
-    #text = str(bert_tokenizer.decode(result)) 
-    #print('  ')
-    #print('Generate encode is: {}'.format(result))
-    text = TEXT.reverse(result.data)
-
-    return text
-
 
 def create_custom_models_fn(runtime,experiment):
     global bert
@@ -547,12 +508,12 @@ def matthews_corrcoef(runtime,experiment,ret):
     target = ret.get('target')
     mcc = sklearn.metrics.matthews_corrcoef(pred,target)
     otu.logger.info('MCC:{}'.format(mcc))
+    otu.hook_record_scalars(ret,{"MCC":mcc})
     return ret
     
 def print_hook(runtime,experiment,ret,info=""):
     otu.logger.info(info)
     return ret
-
 
 Experiment={
     "hparams":{
@@ -577,10 +538,10 @@ Experiment={
     "create_val_dataset_fn":create_val_dataset_fn,
     # Define function to create validate dataset
     # Define callback function to collate dataset in dataloader, can be None
-    "collate_fn_by_dataset":None,
+    "collate_fn_by_dataset":otu.collate_fn_by_torchtext,
     # Define callback function to preprocess data in each iteration, can be None
-    "create_train_loader_fn":create_dataloader,
-    "create_val_loader_fn":create_dataloader,
+    #"create_train_loader_fn":create_dataloader,
+    #"create_val_loader_fn":create_dataloader,
     "multi_task_labels":glue_tasks,
     "preview_dataset_item":preview_data,
     "data_preprocess_fn":data_preprocess_fn,
@@ -590,7 +551,7 @@ Experiment={
     "loss_evaluation_fn":loss_evaluation_fn,
     "custom_train_fn":custom_train_fn,
     # Define function to deep insight result in each iteration, can be None
-    "post_epoch_val_fn":{"CoLA":[(print_hook,{'info':'post_epoch_val_fn'}),otu.get_epoch_results,matthews_corrcoef,(otu.epoch_insight_classification,{'nclass':2})],
+    "post_epoch_val_fn":{"CoLA":[(print_hook,{'info':'post_epoch_val_fn'}),otu.get_epoch_results,matthews_corrcoef,(otu.epoch_insight_classification,{'nclass':2}),(otu.to_plot,{'keys':['MCC','ACC','F1']})],
                          #"CoLA":(otu.epoch_insight_classification,{'nclass':2}),
                          "SST-2":(otu.epoch_insight_classification,{'nclass':2}),
                          "MRPC":(otu.epoch_insight_classification,{'nclass':2}),

@@ -84,9 +84,9 @@ Experiment={
     "loss_criterions":[loss_criterion],
     #"loss_evaluation_fn":loss_evaluation_fn,
     # Define function to deep insight result in each iteration, can be None
-    "post_epoch_val_fn":(otu.epoch_insight_classification,{'nclass':N_class}),
+    "post_epoch_val_fn":[(otu.epoch_insight_classification,{'nclass':N_class}),(otu.to_plot,{'keys':['ACC']})],
     "post_batch_val_fn":otu.batch_result_extract,
-    "post_epoch_train_fn":(otu.epoch_insight_classification,{'nclass':N_class}),
+    "post_epoch_train_fn":[(otu.epoch_insight_classification,{'nclass':N_class}),(otu.to_plot,{'keys':['ACC']})],
     "post_batch_train_fn":otu.batch_result_extract,
     "validate_batch_val_result_fn":validate_batch_val_result_fn,
     "validate_n_batch_in_train":0,

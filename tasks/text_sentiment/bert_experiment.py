@@ -353,7 +353,7 @@ Experiment={
                'lr':2e-4,
                'loader_n_worker':4,
                'batch_size':256,
-               'Adam':{'betas':(0.5,0.999)}
+               'Adam':{'betas':(0.5,0.999),'weight_decay':0.01}
               },
     # Define Experiment Model
     "custom_models":[model],
@@ -376,7 +376,7 @@ Experiment={
     "post_epoch_train_fn":(otu.epoch_insight_classification,{'nclass':N_class}),
     "post_batch_train_fn":otu.batch_result_extract,
     "validate_batch_val_result_fn":validate_batch_val_result_fn,
-    "checkpoint_n_epoch":10,
+    #"checkpoint_n_epoch":10,
     "train_validate_each_n_epoch":1,
     "train_validate_final_with_best":True,
     "interact_cmd":[("c",check_sentiment_by_input,"c <input sentence to be checked>")]
