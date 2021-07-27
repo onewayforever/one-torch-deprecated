@@ -77,6 +77,7 @@ HPARAMS_DEFAULT = {
         'early_stop':0,
         'Adam':{'betas':(0.5,0.999)},
         'SGD':{'momentum':0.5},
+        'RMSprop':{},
         'ReduceLROnPlateau':{'mode':'min','patience':3,'factor':0.8},
         'StepLR':{'step_size':5,'gamma':0.8},
         'LambdaLR':{'lr_lambda':lambda x:1-min(99,x)/100},
@@ -100,6 +101,7 @@ EXPERIMENT_DEFAULT={
         'multi_task_labels':None,
         'use_tensorboard':False,
         'auto_save':False,
+        'learning_curve_batch_interval':0, # 0: by epoch,>0 by N batches
         'validate_n_batch_in_train':-1,     # only validate n batch while training 
         'train_validate_each_n_batch':0, # validate on every n batch 
         'train_validate_each_n_epoch':0,  # validate on every n epoch
@@ -325,11 +327,12 @@ def __save_learning_curve(title,learning_curve):
     logger.info('Save {} Learning curve path to {}'.format(title,learning_curve_path))
     plt.cla()
     plt.title('{} Result Analysis'.format(title))
+    #print(learning_curve)
     if learning_curve.get('epoch'):
         interval = 'epoch'
     if learning_curve.get('batch'):
         interval = 'batch'
-    for source in learning_curve[interval][0].keys():
+    for source in learning_curve['labels']:
         X=list(filter(lambda x:learning_curve[interval][x].get(source) is not None,learning_curve[interval].keys()))
         if len(X)==0:
             continue
@@ -412,6 +415,7 @@ def epoch_train(Runtime,Experiment):
     Runtime['epoch_results']=[]
     run_experiment_callback('pre_epoch_train_fn')
     total_num=0
+    learning_curve_batch_interval=Experiment['learning_curve_batch_interval']
     if Experiment['multi_task_labels'] is not None:
         #print('create Multi task loader')
         train_loader = otu.MTLoader(train_loader)
@@ -442,6 +446,9 @@ def epoch_train(Runtime,Experiment):
             if 'loss' in k:
                 train_loss_info[k]+=loss_info[k] 
         total_num+=1
+        if learning_curve_batch_interval>0 and Runtime['batches_done']%learning_curve_batch_interval==0:
+            for k in loss_info:
+                otu.record_learning_curve(metric=k,scalar=loss_info[k],by_interval='batch',by_task="")
 
         batch_info=run_experiment_callback('post_batch_train_fn')
         if batch_info is not None:
@@ -455,7 +462,7 @@ def epoch_train(Runtime,Experiment):
     Runtime['trace']="train"
     epoch_insight_result = run_experiment_callback('post_epoch_train_fn')
 
-    for k in loss_info:
+    for k in train_loss_info:
         train_loss_info[k]/=total_num
 
     return train_loss_info,epoch_insight_result
@@ -941,6 +948,7 @@ def init_experiment(action):
         return
    
     print("done load data") 
+    print(Experiment)
 
     if custom_models is None and Experiment.get('create_custom_models_fn') is not None:
         custom_models = Experiment.get('create_custom_models_fn')(Runtime,Experiment)
@@ -1034,6 +1042,7 @@ def train_wrapper():
     train_loader = Experiment['train_loader']
     val_loader = Experiment['val_loader']
     train_start_time = time.time()
+    learning_curve_batch_interval=Experiment['learning_curve_batch_interval']
 
     assert train_loader is not None
 
@@ -1047,6 +1056,8 @@ def train_wrapper():
             optimizer = optim.SGD(parameter, lr=HPARAMS['lr'], **HPARAMS['SGD'])
         elif HPARAMS['optim'] == 'Adam':
             optimizer = optim.Adam(parameter, lr=HPARAMS['lr'],**HPARAMS['Adam'])
+        elif HPARAMS['optim'] == 'RMSprop': 
+            optimizer = optim.RMSprop(parameter, lr=HPARAMS['lr'],**HPARAMS['RMSprop'])
 
         lr_scheduler_info=HPARAMS['lr_scheduler']
         if lr_scheduler_info =='ReduceLROnPlateau':
@@ -1093,8 +1104,9 @@ def train_wrapper():
             print('Exit Training\n')
             break
         #train_loss_info,train_insight = epoch_train(args, custom_models, loss_criterions,device, train_loader, custom_optimizers, epoch)
-        for k in train_loss_info:
-            otu.record_learning_curve(metric=k,scalar=train_loss_info[k],by_interval='epoch',by_task="")
+        if learning_curve_batch_interval==0:
+            for k in train_loss_info:
+                otu.record_learning_curve(metric=k,scalar=train_loss_info[k],by_interval='epoch',by_task="")
         epoch_loss=train_loss_info.get('loss')
         if HPARAMS['early_stop'] > 0:
             if epoch_loss:
@@ -1120,13 +1132,14 @@ def train_wrapper():
                 Runtime['trace']='val'
                 #print('run validate per epoch')
                 val_time,val_loss_info,val_insight = validate(Runtime,Experiment)
+                by_interval = 'epoch' if Experiment['learning_curve_batch_interval']==0 else 'batch'
                 if isinstance(val_time,dict):
                     for t in val_loss_info:
                         for k in val_loss_info[t]:
-                            otu.record_learning_curve(metric=k,scalar=val_loss_info[t][k],by_interval='epoch',by_task="",label="{}_val".format(t))
+                            otu.record_learning_curve(metric=k,scalar=val_loss_info[t][k],by_interval=by_interval,by_task="",label="{}_val".format(t))
                 else:
                     for k in val_loss_info:
-                        otu.record_learning_curve(metric=k,scalar=val_loss_info[k],by_interval='epoch',by_task="")
+                        otu.record_learning_curve(metric=k,scalar=val_loss_info[k],by_interval=by_interval,by_task="")
                 #val_loss_info,val_insight = validate(args, custom_models, loss_criterions,device, val_loader,n_batch=HPARAMS['epoch_val_n_batch'],from_epoch=epoch)
                 if isinstance(val_time,dict):
                     epoch_loss = sum(map(lambda x:x[1].get('loss'),val_loss_info.items()))

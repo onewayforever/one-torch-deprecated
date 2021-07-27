@@ -40,7 +40,9 @@ def create_val_dataset_fn(path):
 
 loss_criterion=nn.NLLLoss()
 
-def loss_evaluation_fn(data,output,target):
+def loss_evaluation_fn(runtime,experiment):
+    output = runtime.get('output')
+    target = runtime.get('target')
     loss = loss_criterion(output,target) 
     return loss,loss.item()
 
@@ -82,7 +84,7 @@ Experiment={
     "data_preprocess_fn":None,
     # Define Loss function
     "loss_criterions":[loss_criterion],
-    #"loss_evaluation_fn":loss_evaluation_fn,
+    "loss_evaluation_fn":loss_evaluation_fn,
     # Define function to deep insight result in each iteration, can be None
     "post_epoch_val_fn":[(otu.epoch_insight_classification,{'nclass':N_class}),(otu.to_plot,{'keys':['ACC']})],
     "post_batch_val_fn":otu.batch_result_extract,

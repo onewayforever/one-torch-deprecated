@@ -255,7 +255,7 @@ def record_learning_curve(metric,scalar,by_interval='epoch',by_task=None,label=N
             learning_curve[task]={}
         learning_curve=learning_curve[task]
     if learning_curve.get(metric) is None:
-        learning_curve[metric]={}
+        learning_curve[metric]={'labels':set()}
     if learning_curve[metric].get(by_interval) is None:
         learning_curve[metric][by_interval]={}
     if by_interval=='epoch':
@@ -266,6 +266,7 @@ def record_learning_curve(metric,scalar,by_interval='epoch',by_task=None,label=N
         learning_curve[metric][by_interval][idx]={}
     if label is None:
         label = Runtime['trace']
+    learning_curve[metric]['labels'].add(label)
     learning_curve[metric][by_interval][idx][label]=scalar
 
     
@@ -560,3 +561,7 @@ class CLI(cmd.Cmd):
     # define the shortcuts
     do_q = do_quit
 
+def parameter_clip(model,clips):
+    lower_clip,upper_clip = clips
+    for p in model.parameters():
+        p.data.clamp_(lower_clip, upper_clip)

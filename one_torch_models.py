@@ -127,6 +127,7 @@ def test_res3d():
     #print(y)
     print(x.shape,y.shape,model.cnn_output_shape)
 
+
 if __name__=='__main__':
    test_res3d() 
     
